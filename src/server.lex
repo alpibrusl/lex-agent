@@ -13,8 +13,19 @@
 # For now `sendSubscribe` falls back to a single-frame stream with
 # the final task state.
 #
-# Effects: `[net]` to bind, `[concurrent]` because handler dispatch
-# uses `std.conc` actors to maintain a per-server task store.
+# Effects: the dispatch chain declares the wide row
+# `[io, time, crypto, random, sql, fs_read, fs_write, net, concurrent]`
+# — the same row `lex-web/router.route_effectful` accepts, so an
+# `AgentDef` mounts onto a lex-web `Router` without an effect-row
+# impedance (see `src/mount.lex`). `dispatch_request` itself never
+# uses any of these — they leak through from the handler-closure
+# call (`skill.handle(m)` in `run_skill`) because effect rows on
+# record-field closures are invariant in Lex 0.9.x. The previous
+# `[net, io, llm, proc]` choice predated the lex-web integration
+# called for by #481; `[llm]` was a semantic annotation only and
+# `[proc]` wasn't used by any v0.1 example. Handlers needing those
+# routes them through wrappers (lex-llm called from a `[concurrent]`
+# actor; a process runner adapter).
 
 import "std.list" as list
 import "std.str"  as str
@@ -45,12 +56,14 @@ type HandlerOutcome = {
 # Pair a capability declaration with its concrete handler. The
 # `Capability` value supplies the schema (for validation), the
 # precondition (for the gate), and the direction (must be
-# `Inbound`). Effects on `handle` intentionally widened to the union
-# [net, io, llm, proc] so handlers can do useful work without
-# requiring the server to re-declare per-handler.
+# `Inbound`). Effects on `handle` declare the same wide row as
+# `lex-web/router.route_effectful` — pure handlers fit structurally
+# via subset, and the choice of row is what lets `src/mount.lex`
+# register a single `POST /` route that calls back into
+# `dispatch_request` without an effect-row impedance.
 type Skill = {
   capability :: cap.Capability,
-  handle :: (msg.Message) -> [net, io, llm, proc] HandlerOutcome,
+  handle :: (msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] HandlerOutcome,
 }
 
 # ---- AgentDef ----------------------------------------------------
@@ -73,14 +86,14 @@ fn make_agent_def(c :: card.AgentCard, skills :: List[Skill]) -> AgentDef {
 fn dispatch_request(
   agent :: AgentDef,
   body :: Str
-) -> [net, io, llm, proc] Str {
+) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] Str {
   match proto.parse_request(body) {
     Err(rpcerr) => proto.response_to_str(ResErr(IdNull, rpcerr)),
     Ok(req)     => proto.response_to_str(handle_method(agent, req)),
   }
 }
 
-fn handle_method(agent :: AgentDef, req :: proto.Request) -> [net, io, llm, proc] proto.Response {
+fn handle_method(agent :: AgentDef, req :: proto.Request) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] proto.Response {
   if req.method == proto.method_tasks_send() {
     handle_tasks_send(agent, req)
   } else { if req.method == proto.method_tasks_get() {
@@ -115,7 +128,7 @@ fn handle_method(agent :: AgentDef, req :: proto.Request) -> [net, io, llm, proc
 fn handle_tasks_send(
   agent :: AgentDef,
   req :: proto.Request
-) -> [net, io, llm, proc] proto.Response {
+) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] proto.Response {
   let params := req.params
   match required_str(params, "id") {
     Err(e) => proto.fail(req.id, proto.err_invalid_params(), e),
@@ -143,7 +156,7 @@ fn dispatch_skill(
   sess_id :: Str,
   m :: msg.Message,
   skill_name :: Str
-) -> [net, io, llm, proc] proto.Response {
+) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] proto.Response {
   let resolved := if str.is_empty(skill_name) {
     match list.head(agent.skills) {
       Some(s) => Some(s),
@@ -163,7 +176,7 @@ fn run_skill(
   task_id :: Str,
   sess_id :: Str,
   m :: msg.Message
-) -> [net, io, llm, proc] proto.Response {
+) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] proto.Response {
   # Build the bindings the precondition expects. v0.1 exposes a
   # single `args` binding wrapping the inbound message as a Json
   # `VRecord("Message", ...)`. Real agents will add session state.
@@ -232,7 +245,7 @@ fn first_text_part(parts :: List[msg.Part]) -> Str {
 fn handle_tasks_get(
   agent :: AgentDef,
   req :: proto.Request
-) -> [net, io, llm, proc] proto.Response {
+) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] proto.Response {
   let _ := agent
   match required_str(req.params, "id") {
     Err(e) => proto.fail(req.id, proto.err_invalid_params(), e),
@@ -244,7 +257,7 @@ fn handle_tasks_get(
 fn handle_tasks_cancel(
   agent :: AgentDef,
   req :: proto.Request
-) -> [net, io, llm, proc] proto.Response {
+) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] proto.Response {
   let _ := agent
   match required_str(req.params, "id") {
     Err(e) => proto.fail(req.id, proto.err_invalid_params(), e),

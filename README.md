@@ -19,7 +19,12 @@ you.
 "lex-agent"  = { git = "https://github.com/alpibrusl/lex-agent" }
 "lex-schema" = { git = "https://github.com/alpibrusl/lex-schema" }
 "lex-spec"   = { git = "https://github.com/alpibrusl/lex-spec" }
+"lex-web"    = { git = "https://github.com/alpibrusl/lex-web" }   # only if you use `src/mount.lex`
 ```
+
+`lex-web` is only required when you mount the agent onto a lex-web
+router (see Transport below). The standalone `std.net.serve_fn` path
+needs only `lex-schema` + `lex-spec`.
 
 ## At a glance
 
@@ -41,9 +46,12 @@ fn echo() -> cap.Capability {
       fields: [sch.required_str("text", [StrNonEmpty])] })
 }
 
-# 2. Write the handler. Effects declared per the union the server
-#    allows: [net, io, llm, proc].
-fn echo_handler(m :: msg.Message) -> [net, io, llm, proc] srv.HandlerOutcome {
+# 2. Write the handler. The server's `Skill.handle` row matches
+#    lex-web's `route_effectful` row, so handlers can declare any
+#    subset of [io, time, crypto, random, sql, fs_read, fs_write,
+#    net, concurrent]. Pure bodies (like this one) fit structurally
+#    and need no declaration at all.
+fn echo_handler(m :: msg.Message) -> srv.HandlerOutcome {
   { next_state: TSCompleted,
     reply: Some(msg.agent_text("pong")),
     artifacts: [] }
@@ -61,7 +69,8 @@ fn agent() -> srv.AgentDef {
 End-to-end:
 
 ```bash
-$ lex run --allow-effects net,io,llm,proc examples/01_ping_pong.lex main &
+$ lex run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent \
+    examples/01_ping_pong.lex main &
 
 $ curl http://localhost:4040/.well-known/agent.json
 { "name": "ping-pong", "skills": [...], ... }
@@ -86,10 +95,15 @@ $ curl -X POST http://localhost:4040/ \
 | `src/server.lex`     | `dispatch_request(agent_def, body)` — transport-agnostic A2A request handler |
 | `src/client.lex`     | `send_task(peer_url, msg, opts)` + `fetch_agent_card(peer_url)` + `subscribe(...)` over SSE |
 | `src/stream.lex`     | SSE encoder (`data: <json>\n\n`) + decoder over `Iter[Str]` |
+| `src/mount.lex`      | `mount(router, agent_def)` — register the two A2A routes onto a `lex-web/router.Router` |
 
 Every `src/*` module is pure Lex. The server's `dispatch_request`
-declares the union `[net, io, llm, proc]` — handlers freely use the
-subset they need; the type checker keeps the per-fn signature honest.
+declares the wide row `[io, time, crypto, random, sql, fs_read,
+fs_write, net, concurrent]` — the same row lex-web's
+`route_effectful` accepts, which is what lets `mount` register the
+JSON-RPC route without an effect-row impedance. Handlers freely use
+the subset they need; the type checker keeps the per-fn signature
+honest.
 
 ## A2A method coverage (v0.1)
 
@@ -155,10 +169,17 @@ Suites cover:
 
 ```bash
 # In-process dispatch demo — no HTTP transport, runs in `lex test`.
-lex run --allow-effects net,io,llm,proc examples/02_dispatch_offline.lex demo
+lex run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent \
+    examples/02_dispatch_offline.lex demo
 
-# Full HTTP server on localhost:4040.
-lex run --allow-effects net,io,llm,proc examples/01_ping_pong.lex main
+# Full HTTP server on localhost:4040 (standalone std.net.serve_fn).
+lex run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent \
+    examples/01_ping_pong.lex main
+
+# Same agent, mounted onto a lex-web router (adds request-id, gzip,
+# structured access logs, side-route composition).
+lex run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent \
+    examples/03_mount_with_lex_web.lex main
 ```
 
 ## Transport
@@ -168,11 +189,23 @@ The server in `src/server.lex` is transport-agnostic: it gives you
 
 - `std.net.serve_fn(port, handler)` — the in-tree stdlib transport
   (the path `examples/01_ping_pong.lex` demonstrates).
-- `lex-web.mount(agent_def)` — once
-  [lex-web](https://github.com/alpibrusl/lex-web) ships its production
-  HTTP frame (request id correlation, access logs, graceful shutdown).
+- `mount.mount(router, agent_def)` — registers the two A2A endpoints
+  on a [lex-web](https://github.com/alpibrusl/lex-web) `Router` so
+  the agent inherits the framework's request-id correlation,
+  structured access logs, body-size limit, gzip negotiation, and
+  composes with side routes (`/healthz`, `/metrics`, …) on the same
+  port. See `examples/03_mount_with_lex_web.lex`.
 - Anything that can hand the body to `dispatch_request` and stream the
   response — a custom hyper wrapper, an in-process test harness, etc.
+
+```lex
+import "lex-web/router"   as router
+import "lex-agent/mount"  as mount
+
+fn app() -> router.Router {
+  mount.mount(router.new(), my_agent())
+}
+```
 
 ## License
 
