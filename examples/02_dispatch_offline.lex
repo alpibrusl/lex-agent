@@ -7,7 +7,8 @@
 # agent without needing a port.
 #
 # Run:
-#   lex run --allow-effects net,io,llm,proc examples/02_dispatch_offline.lex demo
+#   lex run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent \
+#       examples/02_dispatch_offline.lex demo
 
 import "std.str"  as str
 
@@ -55,7 +56,7 @@ fn first_text(parts :: List[msg.Part]) -> Str {
   }
 }
 
-fn echo_handler(m :: msg.Message) -> [net, io, llm, proc] srv.HandlerOutcome {
+fn echo_handler(m :: msg.Message) -> srv.HandlerOutcome {
   {
     next_state: TSCompleted,
     reply: Some(msg.agent_text(str.concat("pong: ", first_text(m.parts)))),
@@ -88,7 +89,7 @@ fn empty_envelope() -> Str {
       "\"message\":{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"\"}]}}}"))
 }
 
-fn demo() -> [net, io, llm, proc] Str {
+fn demo() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] Str {
   let agent := make_agent()
   let good := srv.dispatch_request(agent, good_envelope())
   let bad  := srv.dispatch_request(agent, empty_envelope())

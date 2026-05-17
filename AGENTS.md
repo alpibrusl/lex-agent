@@ -29,17 +29,45 @@ SDKs reading the wire are unforgiving.
 
 ## Effects
 
-| effect | why |
-|---|---|
-| `[net]`  | HTTP transport |
-| `[io]`   | available to handlers that touch the filesystem |
-| `[llm]`  | semantic annotation when a handler dispatches to a model |
-| `[proc]` | available to handlers that shell out |
+`Skill.handle` and the whole `dispatch_request` chain declare the
+wide row
 
-`dispatch_request` declares the union `[net, io, llm, proc]` so any
-handler closure assignable to the union is accepted. Pure handlers
-satisfy this structurally — unused declared effects are ignored at
-the call site.
+```
+[io, time, crypto, random, sql, fs_read, fs_write, net, concurrent]
+```
+
+— the same row `lex-web/router.route_effectful` accepts. This is what
+lets `src/mount.lex` register the `POST /` route without an effect-row
+impedance (#481's "A2A server on top of lex-web — `mount()` an
+AgentDef" criterion). The choice supersedes the earlier
+`[net, io, llm, proc]` row, which was a defensive widening from before
+the lex-web integration landed.
+
+| effect    | why a handler might declare it                                       |
+|-----------|----------------------------------------------------------------------|
+| `[io]`    | filesystem read/write through `std.io`, log lines, timers            |
+| `[time]`  | wall-clock reads, monotonic deltas                                   |
+| `[crypto]`/`[random]` | signing requests, generating IDs                         |
+| `[sql]`   | persistent task store / session state via `std.sql`                  |
+| `[fs_read]`/`[fs_write]` | per-path filesystem grants                            |
+| `[net]`   | outbound HTTP from the handler (calling a downstream agent)          |
+| `[concurrent]` | dispatch to a `std.conc` actor (background work, llm wrappers)  |
+
+`dispatch_request` itself never uses any of these — the row leaks
+through from the handler-closure call (`skill.handle(m)` in
+`run_skill`) because effect rows on record-field closures are
+invariant in Lex 0.9.x. Pure handlers satisfy the row structurally
+(subset rule), so the simplest handler signature is just
+`(msg.Message) -> srv.HandlerOutcome` with no effects declared at all.
+
+Handlers that previously needed `[llm]` (semantic annotation for a
+model call) or `[proc]` (shelling out) re-route through wrappers:
+- `[llm]`: post a request to a registered LLM-runner actor via
+  `conc.tell` (carried by the `[concurrent]` effect).
+- `[proc]`: factor the shell-out behind a process-runner adapter and
+  invoke it via the same actor pattern, or fall back to the standalone
+  `std.net.serve_fn` path where the handler can declare `[proc]` on
+  its own (lex-web isn't in the call chain there).
 
 ---
 
@@ -95,20 +123,42 @@ the AgentDef. Each skill emits:
 
 `dispatch_request(agent, body) -> Str` is intentionally pure-ish
 (only the handler closures bring effects in). Plug it into whichever
-HTTP transport you prefer:
+HTTP transport you prefer.
+
+### std.net.serve_fn (standalone)
 
 ```lex
-# std.net.serve_fn — the in-tree path (see examples/01_ping_pong.lex):
-fn handle(req :: Request) -> [net, io, llm, proc] Response {
+# In-tree stdlib path — see examples/01_ping_pong.lex.
+fn handle(req :: Request) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] Response {
   let body := srv.dispatch_request(my_agent, req.body)
   { status: 200, body: BodyStr(body), headers: ... }
 }
 net.serve_fn(4040, handle)
 ```
 
-When [lex-web](https://github.com/alpibrusl/lex-web) ships its
-production `mount(agent_def)` surface, swap that in and keep the
-rest of the agent untouched — the protocol surface is the contract.
+### lex-web mount
+
+`src/mount.lex` registers the two A2A endpoints on a lex-web router,
+so the agent inherits the framework's middleware stack (request-id,
+access logs, body-size limit, gzip) and composes with side routes
+(`/healthz`, `/metrics`, sub-routers) on the same port. This is the
+integration #481 specifies for "A2A server on top of lex-web".
+
+```lex
+import "lex-web/router"   as router
+import "lex-agent/mount"  as mount
+
+fn app() -> router.Router {
+  let r := router.use_mw(router.use_mw(router.new(),
+             mw.request_id()), mw.logger())
+  mount.mount(r, my_agent())
+}
+```
+
+See `examples/03_mount_with_lex_web.lex` for the full wiring,
+including the `net.serve_fn` boundary adapter (lex-web's `Response`
+shape differs from lex-lang's built-in `Response` — the adapter
+rewraps `body :: Str` as `BodyStr(...)` on the way out).
 
 ---
 

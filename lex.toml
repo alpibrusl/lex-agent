@@ -1,8 +1,10 @@
 [package]
 name        = "lex-agent"
 version     = "0.1.0"
+lex         = "0.9.5"
 description = "Pure-Lex implementation of the Google Agent2Agent (A2A) protocol — AgentCard, JSON-RPC 2.0 envelope, Task lifecycle, SSE streaming."
 
 [dependencies]
 lex-schema = { path = "../lex-schema" }
 lex-spec   = { path = "../lex-spec" }
+lex-web    = { path = "../lex-web" }

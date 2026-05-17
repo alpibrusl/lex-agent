@@ -1,10 +1,9 @@
 # lex-agent — end-to-end ping/pong demo
 #
-# Wires the A2A server up to `std.net.serve_fn`. A real production
-# deployment would slot this through lex-web's `mount(agent_def)`
-# (which adds request id correlation, structured access logs, and
-# graceful shutdown — all transport-agnostic to the A2A surface
-# defined here).
+# Wires the A2A server up to `std.net.serve_fn` directly. For the
+# lex-web-mounted variant (request-id correlation, structured access
+# logs, gzip negotiation, sub-router composition) see
+# `03_mount_with_lex_web.lex`.
 #
 # Demonstrates:
 #
@@ -16,7 +15,8 @@
 #     `spec-denied` (-32099) before the handler runs.
 #
 # Run the server:
-#   lex run --allow-effects net,io,llm,proc examples/01_ping_pong.lex main
+#   lex run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent \
+#       examples/01_ping_pong.lex main
 #
 # In another shell:
 #   curl http://localhost:4040/.well-known/agent.json
@@ -77,7 +77,8 @@ fn echo_capability() -> cap.Capability {
 }
 
 # Handler: extract the text, prepend "pong: ", build a reply.
-fn echo_handler(m :: msg.Message) -> [net, io, llm, proc] srv.HandlerOutcome {
+# Pure body — fits structurally in `Skill.handle`'s wider effect row.
+fn echo_handler(m :: msg.Message) -> srv.HandlerOutcome {
   let txt := first_text(m.parts)
   let reply := msg.agent_text(str.concat("pong: ", txt))
   {
@@ -112,7 +113,7 @@ fn make_agent() -> srv.AgentDef {
 
 # ---- HTTP dispatch -----------------------------------------------
 
-fn handle(req :: Request) -> [net, io, llm, proc] Response {
+fn handle(req :: Request) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] Response {
   let agent := make_agent()
   if req.method == "GET" {
     if req.path == "/.well-known/agent.json" {
@@ -133,6 +134,6 @@ fn empty_headers() -> Map[Str, Str] {
   map.from_list([("content-type", "application/json")])
 }
 
-fn main() -> [net, io, llm, proc] Nil {
+fn main() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] Nil {
   net.serve_fn(4040, handle)
 }
