@@ -12,72 +12,101 @@ jobs:
   # ----------------------------------------------------------------
   lex:
     runs-on: ubuntu-latest
+    permissions:
+      # Needed by the "Comment lex errors on PR" step below — the
+      # default GITHUB_TOKEN doesn't carry pull-requests:write.
+      pull-requests: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
+      # Every step pipes through `tee -a ci_log.txt` so we have a
+      # combined log to post on failure even if `lex check` never
+      # runs (e.g. install bombed). `2>&1` is critical — error
+      # output is what we need.
       - name: Install Lex toolchain
         run: |
           set -euxo pipefail
           LEX_VERSION="0.9.5"
-          curl -fsSL -o /tmp/lex.tgz \
-            "https://github.com/alpibrusl/lex-lang/releases/download/v${LEX_VERSION}/lex-v${LEX_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
-          tar -xzf /tmp/lex.tgz -C /tmp/
-          echo "/tmp/lex-v${LEX_VERSION}-x86_64-unknown-linux-gnu" >> "$GITHUB_PATH"
-          "/tmp/lex-v${LEX_VERSION}-x86_64-unknown-linux-gnu/lex" --version
+          {
+            echo "=== Install Lex toolchain ==="
+            curl -fsSL -o /tmp/lex.tgz \
+              "https://github.com/alpibrusl/lex-lang/releases/download/v${LEX_VERSION}/lex-v${LEX_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+            tar -xzf /tmp/lex.tgz -C /tmp/
+            echo "/tmp/lex-v${LEX_VERSION}-x86_64-unknown-linux-gnu" >> "$GITHUB_PATH"
+            "/tmp/lex-v${LEX_VERSION}-x86_64-unknown-linux-gnu/lex" --version
+          } 2>&1 | tee -a ci_log.txt
 
       - name: Install package dependencies (lex-schema / lex-spec / lex-web)
-        run: lex pkg install
+        run: |
+          echo "=== lex pkg install ===" | tee -a ci_log.txt
+          lex pkg install 2>&1 | tee -a ci_log.txt
+          rc="${PIPESTATUS[0]}"
+          [ "$rc" -eq 0 ] || exit "$rc"
 
       - name: Type-check src/
         id: lex_check
         run: |
           set +e
+          echo "=== lex check src/*.lex ===" | tee -a ci_log.txt
           fail=0
-          : > /tmp/lex_errors.log
           for f in src/*.lex; do
+            echo "--- $f ---" | tee -a ci_log.txt
             out=$(lex check "$f" 2>&1)
             rc=$?
+            echo "$out" | tee -a ci_log.txt
+            echo "(rc=$rc)" | tee -a ci_log.txt
             if [ $rc -ne 0 ]; then
               echo "::error file=$f::lex check failed (rc=$rc)"
-              echo "=== FAIL ($rc): $f ===" | tee -a /tmp/lex_errors.log
-              echo "$out" | tee -a /tmp/lex_errors.log
-              echo "" >> /tmp/lex_errors.log
               fail=1
             fi
           done
           exit $fail
 
       - name: Format check
-        run: lex fmt --check src/ tests/ examples/
+        run: |
+          echo "=== lex fmt --check ===" | tee -a ci_log.txt
+          lex fmt --check src/ tests/ examples/ 2>&1 | tee -a ci_log.txt
+          rc="${PIPESTATUS[0]}"
+          [ "$rc" -eq 0 ] || exit "$rc"
 
       - name: Test
         run: |
+          echo "=== lex test ===" | tee -a ci_log.txt
           lex test --allow-effects \
             io,time,crypto,random,sql,fs_read,fs_write,net,concurrent \
-            tests/
+            tests/ 2>&1 | tee -a ci_log.txt
+          rc="${PIPESTATUS[0]}"
+          [ "$rc" -eq 0 ] || exit "$rc"
 
-      # Surface the full lex output on PR review — the host
-      # we run from can't read the Actions log archive, and
-      # `head -3` truncates the diagnostic to uselessness.
-      - name: Comment lex errors on PR
-        if: failure() && github.event_name == 'pull_request' && hashFiles('/tmp/lex_errors.log') != ''
+      # Always post the captured log on failure — the host driving
+      # this PR can't read the Actions log archive, and `head -3`
+      # on `lex check` was too aggressive to be useful. Bounded to
+      # ~60kB so we don't exceed the comment-size limit.
+      - name: Comment captured log on PR
+        if: failure() && github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         run: |
-          if [ ! -s /tmp/lex_errors.log ]; then
-            echo "No errors captured; the failure was elsewhere."
-            exit 0
+          if [ ! -f ci_log.txt ]; then
+            echo "no ci_log.txt — failure before any tracked step" > ci_log.txt
           fi
-          body=$(printf '```\n%s\n```' "$(cat /tmp/lex_errors.log)")
-          json=$(python3 -c 'import json,sys; print(json.dumps({"body": sys.argv[1]}))' "$body")
+          # Trim to the last ~60kB to stay under the 65535-char
+          # comment limit while keeping the most relevant tail.
+          tail -c 60000 ci_log.txt > ci_log.tail.txt
+          json=$(python3 -c '
+import json, sys
+with open("ci_log.tail.txt") as f:
+    body = "## CI log (tail)\n\n```\n" + f.read() + "\n```"
+print(json.dumps({"body": body}))
+')
           curl -sS -X POST \
             -H "Authorization: token $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" \
-            -d "$json" > /tmp/comment_resp.json
-          jq -r '.html_url // .message // "?"' /tmp/comment_resp.json
+            -d "$json" | jq -r '.html_url // .message // "?"'
 
   # ----------------------------------------------------------------
   # Interop — validate lex-agent's wire format against the Google
