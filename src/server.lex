@@ -40,6 +40,9 @@ import "lex-schema/json_value" as jv
 import "lex-spec/capability" as cap
 import "lex-spec/spec"       as sp
 
+import "lex-trail/log"   as trail
+import "lex-trail/kinds" as kinds
+
 import "./protocol"   as proto
 import "./agent_card" as card
 import "./task"       as tk
@@ -75,24 +78,69 @@ type Skill = {
 # ---- AgentDef ----------------------------------------------------
 #
 # `store` is an optional `std.conc` actor address; when present, the
-# server writes every successful dispatch into it and reads from it
-# on `tasks/get` / `tasks/cancel`. When `None`, those methods return
+# server writes every successful dispatch into it and reads back on
+# `tasks/get` / `tasks/cancel`. When `None`, those methods return
 # their respective "not supported" errors (the pre-v0.2 behaviour).
+#
+# `trail` is an optional lex-trail Log; when present, every A2A
+# protocol method emits an `a2a.*` event for end-to-end auditability.
+# Attach via `with_trail(agent, log)`.
 
 type AgentDef = {
   card :: card.AgentCard,
   skills :: List[Skill],
   store :: Option[conc.Addr],
+  trail :: Option[trail.Log],
 }
 
 fn make_agent_def(c :: card.AgentCard, skills :: List[Skill]) -> AgentDef {
-  { card: c, skills: skills, store: None }
+  { card: c, skills: skills, store: None, trail: None }
 }
 
 # Attach a task store. Callers spawn the actor via
 # `store.spawn_store()` once at boot and pipe the address in here.
 fn with_store(agent :: AgentDef, addr :: conc.Addr) -> AgentDef {
-  { card: agent.card, skills: agent.skills, store: Some(addr) }
+  { card: agent.card, skills: agent.skills, store: Some(addr), trail: agent.trail }
+}
+
+# Attach a trail log. Every A2A protocol method will emit an
+# `a2a.*` event into `log`. Open a `trail.open_memory()` log in
+# tests; use `trail.open(path)` for persistent audit trails.
+fn with_trail(agent :: AgentDef, log :: trail.Log) -> AgentDef {
+  { card: agent.card, skills: agent.skills, store: agent.store, trail: Some(log) }
+}
+
+# ---- Trail helpers -----------------------------------------------
+
+fn emit_trail(
+  log     :: Option[trail.Log],
+  kind    :: Str,
+  parent  :: Option[Str],
+  payload :: Str
+) -> [sql, time] Unit {
+  match log {
+    None    => (),
+    Some(l) => {
+      let __evt := trail.append(l, kind, parent, payload)
+      ()
+    },
+  }
+}
+
+fn emit_msg_sent_if_reply(
+  log     :: Option[trail.Log],
+  task_id :: Str,
+  reply   :: Option[msg.Message]
+) -> [sql, time] Unit {
+  match reply {
+    None    => (),
+    Some(m) => {
+      let payload := str.join([
+        "{\"task_id\":\"", task_id,
+        "\",\"message_id\":\"", m.message_id, "\"}"], "")
+      emit_trail(log, kinds.a2a_msg_sent(), None, payload)
+    },
+  }
 }
 
 # ---- Routing -----------------------------------------------------
@@ -161,6 +209,10 @@ fn handle_tasks_send(
           Err(e) => proto.fail(req.id, proto.err_invalid_params(),
             str.concat("invalid message: ", e)),
           Ok(m) => {
+            let recv_payload := str.join([
+              "{\"task_id\":\"", task_id,
+              "\",\"context_id\":\"", ctx_id, "\"}"], "")
+            let __recv := emit_trail(agent.trail, kinds.a2a_task_received(), None, recv_payload)
             let skill_name := optional_str(params, "skill")
             dispatch_skill(agent, req.id, task_id, ctx_id, m, skill_name)
           },
@@ -205,13 +257,14 @@ fn dispatch_skill(
   match resolved {
     None => proto.fail(rpc_id, proto.err_unsupported_op(),
       str.concat("unknown skill: ", skill_name)),
-    Some(skill) => run_skill(skill, agent.store, rpc_id, task_id, ctx_id, m),
+    Some(skill) => run_skill(skill, agent.store, agent.trail, rpc_id, task_id, ctx_id, m),
   }
 }
 
 fn run_skill(
   skill :: Skill,
   store_ref :: Option[conc.Addr],
+  trail_log :: Option[trail.Log],
   rpc_id :: proto.RpcId,
   task_id :: Str,
   ctx_id :: Str,
@@ -234,6 +287,9 @@ fn run_skill(
         Ok(t)  => t,
         Err(_) => initial,
       }
+      let __e1 := emit_trail(trail_log, kinds.a2a_task_state_change(), None,
+        str.join(["{\"task_id\":\"", task_id,
+          "\",\"from_state\":\"submitted\",\"to_state\":\"working\"}"], ""))
       let outcome := skill.handle(m)
       # Stamp a server-generated `messageId` on any reply the handler
       # left blank — A2A requires a non-empty id on every Message.
@@ -249,6 +305,11 @@ fn run_skill(
             Err(_) => acc,
           }
         })
+      let __e2 := emit_trail(trail_log, kinds.a2a_task_state_change(), None,
+        str.join(["{\"task_id\":\"", task_id,
+          "\",\"from_state\":\"working\",\"to_state\":\"",
+          tk.state_label(final_task.state), "\"}"], ""))
+      let __e3 := emit_msg_sent_if_reply(trail_log, task_id, stamped_reply)
       # If a store is attached, persist the final task — every
       # successful dispatch ends with the latest snapshot available
       # to `tasks/get` and `tasks/cancel`.
@@ -360,7 +421,11 @@ fn handle_tasks_cancel(
               str.concat("not cancelable: ", reason))
           }
         },
-        Ok(t) => proto.ok(req.id, tk.task_to_json(t)),
+        Ok(t) => {
+          let __ec := emit_trail(agent.trail, kinds.a2a_task_state_change(), None,
+            str.join(["{\"task_id\":\"", id, "\",\"to_state\":\"canceled\"}"], ""))
+          proto.ok(req.id, tk.task_to_json(t))
+        },
       },
     },
   }

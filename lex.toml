@@ -11,3 +11,4 @@ description = "Pure-Lex implementation of the Google Agent2Agent (A2A) protocol 
 lex-schema = { git = "https://github.com/alpibrusl/lex-schema" }
 lex-spec   = { git = "https://github.com/alpibrusl/lex-spec" }
 lex-web    = { git = "https://github.com/alpibrusl/lex-web" }
+lex-trail  = { git = "https://github.com/alpibrusl/lex-trail" }
