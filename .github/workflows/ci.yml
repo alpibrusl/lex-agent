@@ -79,26 +79,30 @@ jobs:
       - name: Smoke-test reference server
         # `reference_server.py` validates every payload through
         # a2a-sdk on the way out — startup-time validation alone
-        # proves the AgentCard shape is round-trip-clean.
+        # proves the AgentCard shape is round-trip-clean. We then
+        # round-trip the live response through the standalone
+        # validator too, via tempfiles (the validator checks
+        # Path.is_file() and /dev/stdin / pipes don't satisfy that).
         run: |
           python3 tests/interop/reference_server.py --port 14041 &
           SERVER_PID=$!
-          # Wait for "ready" line on stdout.
+          # Wait for the listener to bind.
           for _ in $(seq 1 50); do
             if curl -fsS http://127.0.0.1:14041/.well-known/agent.json >/dev/null; then
               break
             fi
             sleep 0.1
           done
-          curl -fsS http://127.0.0.1:14041/.well-known/agent.json | \
-            python3 tests/interop/validate_with_a2a_sdk.py --card /dev/stdin --strict
+          curl -fsS http://127.0.0.1:14041/.well-known/agent.json > /tmp/live_card.json
+          python3 tests/interop/validate_with_a2a_sdk.py --card /tmp/live_card.json --strict
           curl -fsS -X POST http://127.0.0.1:14041/ \
             -H 'content-type: application/json' \
             -d '{"jsonrpc":"2.0","id":1,"method":"tasks/send","params":{"id":"t_1","contextId":"ctx_1","message":{"kind":"message","messageId":"m1","role":"user","parts":[{"type":"text","text":"hi"}]}}}' \
-            | tee /tmp/resp.json
+            > /tmp/resp.json
+          cat /tmp/resp.json
           # Extract `result` and re-validate as a Task.
-          python3 -c "import json; print(json.dumps(json.load(open('/tmp/resp.json'))['result']))" > /tmp/task.json
-          python3 tests/interop/validate_with_a2a_sdk.py --task /tmp/task.json --strict
+          python3 -c "import json; print(json.dumps(json.load(open('/tmp/resp.json'))['result']))" > /tmp/live_task.json
+          python3 tests/interop/validate_with_a2a_sdk.py --task /tmp/live_task.json --strict
           kill $SERVER_PID
           wait $SERVER_PID 2>/dev/null || true
 
