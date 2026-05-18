@@ -1,0 +1,30 @@
+{
+  "name": "ping-pong",
+  "description": "Demo A2A agent — echoes inputs with a `pong: ` prefix.",
+  "version": "0.1.0",
+  "url": "http://localhost:4040",
+  "provider": {"organization": "", "url": ""},
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": true
+  },
+  "defaultInputModes": ["text", "data"],
+  "defaultOutputModes": ["text", "data"],
+  "skills": [
+    {
+      "id": "echo",
+      "name": "echo",
+      "description": "Reply with the input text.",
+      "tags": [],
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "text": {"type": "string", "minLength": 1}
+        },
+        "required": ["text"]
+      },
+      "hasPrecondition": true
+    }
+  ]
+}

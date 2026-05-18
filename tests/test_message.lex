@@ -22,6 +22,42 @@ fn round_trip_user_text() -> Result[Unit, Str] {
   }
 }
 
+# Wire shape: A2A v0.3+ requires `kind: "message"` and `messageId`.
+fn emits_kind_and_message_id() -> Result[Unit, Str] {
+  let m := msg.user_text_with_id("msg_abc", "hi")
+  let s := jv.stringify(msg.message_to_json(m))
+  if str.contains(s, "\"kind\":\"message\"")
+    and str.contains(s, "\"messageId\":\"msg_abc\"") {
+    Ok(())
+  } else {
+    Err(str.concat("missing required v0.3 fields: ", s))
+  }
+}
+
+# Round-trip preserves the messageId.
+fn message_id_round_trips() -> Result[Unit, Str] {
+  let m := msg.agent_text_with_id("msg_xyz", "pong")
+  match msg.parse_message(msg.message_to_json(m)) {
+    Err(e) => Err(e),
+    Ok(m2) => if m2.message_id == "msg_xyz" { Ok(()) } else {
+      Err(str.concat("id lost: ", m2.message_id))
+    },
+  }
+}
+
+# Tolerance: parsing a message without messageId is accepted (older
+# producers / stub fixtures), defaults to "".
+fn missing_message_id_tolerated() -> Result[Unit, Str] {
+  let body := "{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"hi\"}]}"
+  match jv.parse(body) {
+    Err(_) => Err("parse"),
+    Ok(j)  => match msg.parse_message(j) {
+      Err(e) => Err(str.concat("rejected: ", e)),
+      Ok(m)  => if str.is_empty(m.message_id) { Ok(()) } else { Err("unexpected id") },
+    },
+  }
+}
+
 fn parse_data_part() -> Result[Unit, Str] {
   let body := "{\"role\":\"agent\",\"parts\":[{\"type\":\"data\",\"data\":{\"x\":1}}]}"
   match jv.parse(body) {
@@ -78,6 +114,9 @@ fn missing_role_rejected() -> Result[Unit, Str] {
 fn suite() -> List[Result[Unit, Str]] {
   [
     round_trip_user_text(),
+    emits_kind_and_message_id(),
+    message_id_round_trips(),
+    missing_message_id_tolerated(),
     parse_data_part(),
     parse_file_part_uri(),
     unknown_role_rejected(),

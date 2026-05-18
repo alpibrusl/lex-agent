@@ -98,20 +98,26 @@ fn pull_str(j :: jv.Json, field :: Str, default :: Str) -> Str {
 
 type SendOpts = {
   task_id :: Str,
-  session_id :: Str,
+  context_id :: Str,
   skill :: Str,         # empty string ⇒ rely on server default
 }
 
 fn default_opts() -> SendOpts {
-  { task_id: "task_0", session_id: "sess_0", skill: "" }
+  { task_id: "task_0", context_id: "ctx_0", skill: "" }
 }
 
-# Build the JSON-RPC params payload for `tasks/send`.
-fn build_send_params(m :: msg.Message, opts :: SendOpts) -> jv.Json {
+# Build the JSON-RPC params payload for `tasks/send`. Stamps a fresh
+# messageId on the outbound message if the caller left it blank.
+fn build_send_params(m :: msg.Message, opts :: SendOpts) -> [crypto, random] jv.Json {
+  let stamped := if str.is_empty(m.message_id) {
+    msg.with_message_id(m, msg.gen_message_id())
+  } else {
+    m
+  }
   let base := [
     ("id",        JStr(opts.task_id)),
-    ("sessionId", JStr(opts.session_id)),
-    ("message",   msg.message_to_json(m)),
+    ("contextId", JStr(opts.context_id)),
+    ("message",   msg.message_to_json(stamped)),
   ]
   if str.is_empty(opts.skill) {
     JObj(base)
@@ -137,9 +143,10 @@ fn send_task(
   peer_url :: Str,
   m :: msg.Message,
   opts :: SendOpts
-) -> [net] Result[jv.Json, proto.RpcError] {
+) -> [net, crypto, random] Result[jv.Json, proto.RpcError] {
+  let params := build_send_params(m, opts)
   let body := build_envelope(proto.method_tasks_send(),
-    build_send_params(m, opts), IdStr(opts.task_id))
+    params, IdStr(opts.task_id))
   match http.post(peer_url, bytes.from_str(body), "application/json") {
     Err(e) => Err(proto.error(proto.err_internal(),
       str.concat("http error: ", http_err_str(e)))),
@@ -195,9 +202,10 @@ fn subscribe(
   m :: msg.Message,
   opts :: SendOpts,
   api_key :: Str
-) -> [net] Result[List[tk.StatusUpdate], Str] {
+) -> [net, crypto, random] Result[List[tk.StatusUpdate], Str] {
+  let params := build_send_params(m, opts)
   let body := build_envelope(proto.method_tasks_send_subscribe(),
-    build_send_params(m, opts), IdStr(opts.task_id))
+    params, IdStr(opts.task_id))
   let headers := build_headers(api_key)
   match http.stream_lines(peer_url, headers, body) {
     Err(e) => Err(str.concat("stream error: ", e)),

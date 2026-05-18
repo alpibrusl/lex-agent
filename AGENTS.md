@@ -8,22 +8,45 @@ specific to authoring against the package.
 
 ## Wire-shape fidelity
 
-The JSON envelopes on the wire match the
-[A2A spec](https://github.com/google/A2A) exactly:
+The JSON envelopes on the wire match the A2A v0.3 spec — what the
+Google Python SDK ([`a2a-sdk`](https://pypi.org/project/a2a-sdk/))
+parses through its `a2a.compat.v0_3` Pydantic types:
 
 ```
 POST /
 { "jsonrpc": "2.0", "id": <int|str|null>, "method": "tasks/send",
-  "params": { "id": "...", "sessionId": "...", "message": { ... } } }
+  "params": { "id": "task_...",
+              "contextId": "ctx_...",
+              "message": { "kind": "message",
+                           "messageId": "msg_...",
+                           "role": "user",
+                           "parts": [...] } } }
 
 GET /.well-known/agent.json
 { "name": "...", "description": "...", "version": "...",
-  "url": "...", "skills": [...], "capabilities": { ... } }
+  "url": "...",
+  "skills": [ { "id": "...", "name": "...", "tags": [],
+                "description": "...", "inputSchema": { ... } } ],
+  "capabilities": { ... } }
 ```
 
-Don't change field casing (it's `sessionId`, not `session_id`; the
-agent card emits `inputSchema`, not `input_schema`). Cross-language
-SDKs reading the wire are unforgiving.
+Required v0.3 fields:
+- `Task.kind = "task"`, `Task.contextId` (not `sessionId` — the
+  legacy name is still accepted on parse for backwards compat,
+  emitted shape is canonical).
+- `Message.kind = "message"`, `Message.messageId` (non-empty).
+  Server-side replies built via the pure `msg.agent_text` /
+  `msg.user_text` builders get a fresh id stamped by
+  `stamp_reply_id` in `server.lex`; the pure builders default the
+  field to `""` so test fixtures stay deterministic.
+- `AgentSkill.tags` — always emitted, defaults to `[]`.
+- `AgentSkill.id` + `name` — A2A clients distinguish skills on the
+  wire by `id`; we emit both from the same `Capability.name`.
+
+Don't change field casing (`sessionId`/`session_id`, `inputSchema`/
+`input_schema`). The interop tests in `tests/interop/` run every
+emitted shape through the official Google A2A SDK — any drift fails
+CI loudly.
 
 ---
 

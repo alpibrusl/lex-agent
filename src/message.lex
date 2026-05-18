@@ -7,7 +7,9 @@
 #
 # Wire shape mirrors the Google A2A spec:
 #
-#   { "role": "user" | "agent",
+#   { "kind": "message",
+#     "messageId": "msg_...",
+#     "role": "user" | "agent",
 #     "parts": [
 #       { "type": "text", "text": "..." },
 #       { "type": "data", "data": { ... } },
@@ -15,10 +17,21 @@
 #                          "uri": "..." | "bytes": "<base64>" }
 #     ] }
 #
-# Pure value module — no effects.
+# `messageId` is required by the A2A spec — callers either pass an
+# explicit id to the `*_with_id` builders, or use the effectful
+# `gen_message_id()` helper to mint a fresh one. The convenience
+# `user_text` / `agent_text` builders default to an empty string
+# `messageId` so they stay pure for tests; production callers (the
+# server's reply path, the client's outbound envelope) generate an id
+# via `gen_message_id`.
+#
+# `kind: "message"` is the discriminator the A2A SDK uses to tell
+# Messages apart from Tasks / TaskUpdates on the wire — emit it
+# unconditionally, accept it as optional on parse for tolerance.
 
-import "std.list" as list
-import "std.str"  as str
+import "std.list"   as list
+import "std.str"    as str
+import "std.crypto" as crypto
 
 import "lex-schema/json_value" as jv
 
@@ -59,22 +72,54 @@ fn role_of(s :: Str) -> Option[Role] {
 }
 
 type Message = {
+  message_id :: Str,       # `messageId` on the wire; required by A2A spec
   role :: Role,
   parts :: List[Part],
 }
 
 # Convenience builders --------------------------------------------------
+#
+# The `*_text` / `*_data` builders default `message_id` to "" so test
+# fixtures and pure call-sites don't need to thread an effectful id
+# through their setup. Production callers (server reply, client send)
+# go through `*_with_id` (or call `gen_message_id` first and feed the
+# result in).
 
 fn user_text(s :: Str) -> Message {
-  { role: RoleUser, parts: [TextPart(s)] }
+  { message_id: "", role: RoleUser, parts: [TextPart(s)] }
 }
 
 fn agent_text(s :: Str) -> Message {
-  { role: RoleAgent, parts: [TextPart(s)] }
+  { message_id: "", role: RoleAgent, parts: [TextPart(s)] }
 }
 
 fn agent_data(data :: jv.Json) -> Message {
-  { role: RoleAgent, parts: [DataPart(data)] }
+  { message_id: "", role: RoleAgent, parts: [DataPart(data)] }
+}
+
+fn user_text_with_id(id :: Str, s :: Str) -> Message {
+  { message_id: id, role: RoleUser, parts: [TextPart(s)] }
+}
+
+fn agent_text_with_id(id :: Str, s :: Str) -> Message {
+  { message_id: id, role: RoleAgent, parts: [TextPart(s)] }
+}
+
+fn agent_data_with_id(id :: Str, data :: jv.Json) -> Message {
+  { message_id: id, role: RoleAgent, parts: [DataPart(data)] }
+}
+
+# Stamp / overwrite an existing Message's id — useful when a caller
+# constructed the Message via the pure builders and only now has a
+# random source available.
+fn with_message_id(m :: Message, id :: Str) -> Message {
+  { message_id: id, role: m.role, parts: m.parts }
+}
+
+# Fresh A2A-style id. 32 hex characters of crypto-random — collision
+# resistant, unpredictable, and short enough to read in logs.
+fn gen_message_id() -> [crypto, random] Str {
+  str.concat("msg_", crypto.random_str_hex(16))
 }
 
 # ---- Artifact -----------------------------------------------------
@@ -124,8 +169,10 @@ fn file_ref_to_json(r :: FileRef) -> List[(Str, jv.Json)] {
 
 fn message_to_json(m :: Message) -> jv.Json {
   JObj([
-    ("role",  JStr(role_label(m.role))),
-    ("parts", JList(list.map(m.parts, part_to_json))),
+    ("kind",      JStr("message")),
+    ("messageId", JStr(m.message_id)),
+    ("role",      JStr(role_label(m.role))),
+    ("parts",     JList(list.map(m.parts, part_to_json))),
   ])
 }
 
@@ -144,6 +191,10 @@ fn artifact_to_json(a :: Artifact) -> jv.Json {
 # so callers can decide. Roles outside {user, agent} are rejected.
 
 fn parse_message(j :: jv.Json) -> Result[Message, Str] {
+  let message_id := match jv.get_field(j, "messageId") {
+    Some(v) => match jv.as_str(v) { Some(s) => s, None => "" },
+    None    => "",
+  }
   match jv.get_field(j, "role") {
     None => Err("missing field: role"),
     Some(rj) => match jv.as_str(rj) {
@@ -156,7 +207,7 @@ fn parse_message(j :: jv.Json) -> Result[Message, Str] {
             None => Err("parts must be an array"),
             Some(items) => match parse_parts(items) {
               Err(e) => Err(e),
-              Ok(ps) => Ok({ role: r, parts: ps }),
+              Ok(ps) => Ok({ message_id: message_id, role: r, parts: ps }),
             },
           },
         },

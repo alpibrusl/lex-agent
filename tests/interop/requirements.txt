@@ -1,0 +1,5 @@
+# Pinned Python A2A SDK for interop tests. v1.0+ is protobuf-based;
+# we validate against the `a2a.compat.v0_3` types which preserve the
+# canonical JSON wire format lex-agent targets. Pinned to a known-good
+# version — bump deliberately, alongside any wire-shape change.
+a2a-sdk==1.0.3

@@ -1,0 +1,27 @@
+{
+  "kind": "task",
+  "id": "t_1",
+  "contextId": "ctx_1",
+  "status": {"state": "completed"},
+  "artifacts": [],
+  "history": [
+    {
+      "kind": "message",
+      "messageId": "msg_in_1",
+      "role": "user",
+      "parts": [{"type": "text", "text": "hello"}]
+    },
+    {
+      "kind": "message",
+      "messageId": "msg_out_1",
+      "role": "agent",
+      "parts": [{"type": "text", "text": "pong: hello"}]
+    }
+  ],
+  "message": {
+    "kind": "message",
+    "messageId": "msg_out_1",
+    "role": "agent",
+    "parts": [{"type": "text", "text": "pong: hello"}]
+  }
+}

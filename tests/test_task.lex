@@ -3,6 +3,8 @@
 import "std.list" as list
 import "std.str"  as str
 
+import "lex-schema/json_value" as jv
+
 import "../src/message" as msg
 import "../src/task"    as tk
 
@@ -64,6 +66,19 @@ fn add_artifact_after_terminal() -> Result[Unit, Str] {
   }
 }
 
+# Wire shape: A2A v0.3+ uses `contextId` (not `sessionId`) and emits
+# `kind: "task"` as the discriminator.
+fn task_emits_v03_wire_fields() -> Result[Unit, Str] {
+  let s := jv.stringify(tk.task_to_json(fresh()))
+  if str.contains(s, "\"kind\":\"task\"")
+    and str.contains(s, "\"contextId\":\"s_1\"")
+    and (not str.contains(s, "\"sessionId\":")) {
+    Ok(())
+  } else {
+    Err(str.concat("wrong wire shape: ", s))
+  }
+}
+
 fn state_label_roundtrip() -> Result[Unit, Str] {
   let names := ["submitted", "working", "input-required", "completed", "canceled", "failed"]
   let result := list.fold(names, "ok",
@@ -86,6 +101,7 @@ fn suite() -> List[Result[Unit, Str]] {
     input_required_round_trip(),
     invalid_initial_skip(),
     add_artifact_after_terminal(),
+    task_emits_v03_wire_fields(),
     state_label_roundtrip(),
   ]
 }

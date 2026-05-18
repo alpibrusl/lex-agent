@@ -73,20 +73,20 @@ fn make_agent() -> srv.AgentDef {
 
 # ---- The demo ----------------------------------------------------
 
-# A well-formed `tasks/send` request.
+# A well-formed `tasks/send` request (A2A v0.3+ shape).
 fn good_envelope() -> Str {
   str.concat(
     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tasks/send\",\"params\":{",
-    str.concat("\"id\":\"t_1\",\"sessionId\":\"s_1\",",
-      "\"message\":{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"hello\"}]}}}"))
+    str.concat("\"id\":\"t_1\",\"contextId\":\"ctx_1\",",
+      "\"message\":{\"kind\":\"message\",\"messageId\":\"msg_in_1\",\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"hello\"}]}}}"))
 }
 
 # An empty-text request — should be `spec-denied` (-32099).
 fn empty_envelope() -> Str {
   str.concat(
     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tasks/send\",\"params\":{",
-    str.concat("\"id\":\"t_2\",\"sessionId\":\"s_1\",",
-      "\"message\":{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"\"}]}}}"))
+    str.concat("\"id\":\"t_2\",\"contextId\":\"ctx_1\",",
+      "\"message\":{\"kind\":\"message\",\"messageId\":\"msg_in_2\",\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"\"}]}}}"))
 }
 
 fn demo() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] Str {

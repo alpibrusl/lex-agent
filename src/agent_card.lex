@@ -88,10 +88,15 @@ fn make(
 # ---- JSON serialization ------------------------------------------
 
 fn skill_to_json(c :: cap.Capability) -> jv.Json {
+  # `tags` is required by the A2A v0.3+ spec; we emit an empty array
+  # by default. Capability values that want richer discovery metadata
+  # can extend `lex-spec/capability` with a future `tags` field and
+  # pipe it through here without changing the wire shape.
   let base := [
     ("id",          JStr(c.name)),
     ("name",        JStr(c.name)),
     ("description", JStr(c.description)),
+    ("tags",        JList([])),
     ("inputSchema", sch.to_json_schema(c.params)),
   ]
   let with_output := match c.reply {
