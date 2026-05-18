@@ -23,8 +23,9 @@
 #
 #   curl -X POST http://localhost:4040/ -H 'content-type: application/json' \
 #     -d '{"jsonrpc":"2.0","id":1,"method":"tasks/send","params":{
-#       "id":"t_1","sessionId":"s_1",
-#       "message":{"role":"user","parts":[{"type":"text","text":"hello"}]}
+#       "id":"t_1","contextId":"ctx_1",
+#       "message":{"kind":"message","messageId":"m1","role":"user",
+#                   "parts":[{"type":"text","text":"hello"}]}
 #     }}'
 
 import "std.net" as net

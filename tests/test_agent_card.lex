@@ -48,12 +48,21 @@ fn skill_input_schema_includes_constraint() -> Result[Unit, Str] {
   }
 }
 
+# Wire shape: A2A v0.3+ requires AgentSkill.tags.
+fn skill_emits_tags() -> Result[Unit, Str] {
+  let s := card.card_to_str(demo_card())
+  if str.contains(s, "\"tags\":[]") { Ok(()) } else {
+    Err(str.concat("missing tags field: ", s))
+  }
+}
+
 fn suite() -> List[Result[Unit, Str]] {
   [
     name_in_json(),
     capabilities_in_json(),
     skill_listed(),
     skill_input_schema_includes_constraint(),
+    skill_emits_tags(),
   ]
 }
 

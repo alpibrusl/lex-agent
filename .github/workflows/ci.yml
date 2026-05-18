@@ -1,0 +1,227 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # ----------------------------------------------------------------
+  # Lex side — type-check, format, run the test suites.
+  # Mirrors the install pattern used in alpibrusl/lex-web's CI.
+  # ----------------------------------------------------------------
+  lex:
+    runs-on: ubuntu-latest
+    permissions:
+      # Needed by the "Comment lex errors on PR" step below — the
+      # default GITHUB_TOKEN doesn't carry pull-requests:write.
+      pull-requests: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      # Every step pipes through `tee -a ci_log.txt` so we have a
+      # combined log to post on failure even if `lex check` never
+      # runs (e.g. install bombed). `2>&1` is critical — error
+      # output is what we need.
+      - name: Install Lex toolchain
+        run: |
+          set -euxo pipefail
+          LEX_VERSION="0.9.5"
+          {
+            echo "=== Install Lex toolchain ==="
+            curl -fsSL -o /tmp/lex.tgz \
+              "https://github.com/alpibrusl/lex-lang/releases/download/v${LEX_VERSION}/lex-v${LEX_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+            tar -xzf /tmp/lex.tgz -C /tmp/
+            echo "/tmp/lex-v${LEX_VERSION}-x86_64-unknown-linux-gnu" >> "$GITHUB_PATH"
+            "/tmp/lex-v${LEX_VERSION}-x86_64-unknown-linux-gnu/lex" --version
+          } 2>&1 | tee -a ci_log.txt
+
+      - name: Install package dependencies (lex-schema / lex-spec / lex-web)
+        run: |
+          echo "=== lex pkg install ===" | tee -a ci_log.txt
+          lex pkg install 2>&1 | tee -a ci_log.txt
+          rc="${PIPESTATUS[0]}"
+          [ "$rc" -eq 0 ] || exit "$rc"
+
+      - name: Type-check src/
+        id: lex_check
+        run: |
+          set +e
+          echo "=== lex check src/*.lex ===" | tee -a ci_log.txt
+          fail=0
+          for f in src/*.lex; do
+            echo "--- $f ---" | tee -a ci_log.txt
+            out=$(lex check "$f" 2>&1)
+            rc=$?
+            echo "$out" | tee -a ci_log.txt
+            echo "(rc=$rc)" | tee -a ci_log.txt
+            if [ $rc -ne 0 ]; then
+              echo "::error file=$f::lex check failed (rc=$rc)"
+              fail=1
+            fi
+          done
+          exit $fail
+
+      - name: Format check
+        run: |
+          echo "=== lex fmt --check ===" | tee -a ci_log.txt
+          lex fmt --check src/ tests/ examples/ 2>&1 | tee -a ci_log.txt
+          rc="${PIPESTATUS[0]}"
+          [ "$rc" -eq 0 ] || exit "$rc"
+
+      - name: Test
+        run: |
+          echo "=== lex test ===" | tee -a ci_log.txt
+          lex test --allow-effects \
+            io,time,crypto,random,sql,fs_read,fs_write,net,concurrent \
+            tests/ 2>&1 | tee -a ci_log.txt
+          rc="${PIPESTATUS[0]}"
+          [ "$rc" -eq 0 ] || exit "$rc"
+
+      # Always post the captured log on failure — the host driving
+      # this PR can't read the Actions log archive, and `head -3`
+      # on `lex check` was too aggressive to be useful. Bounded to
+      # ~60kB so we don't exceed the comment-size limit.
+      - name: Comment captured log on PR
+        if: failure() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ ! -f ci_log.txt ]; then
+            echo "no ci_log.txt — failure before any tracked step" > ci_log.txt
+          fi
+          # Trim to the last ~60kB to stay under the 65535-char
+          # comment limit while keeping the most relevant tail.
+          tail -c 60000 ci_log.txt > ci_log.tail.txt
+          json=$(python3 -c '
+import json, sys
+with open("ci_log.tail.txt") as f:
+    body = "## CI log (tail)\n\n```\n" + f.read() + "\n```"
+print(json.dumps({"body": body}))
+')
+          curl -sS -X POST \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" \
+            -d "$json" | jq -r '.html_url // .message // "?"'
+
+  # ----------------------------------------------------------------
+  # Interop — validate lex-agent's wire format against the Google
+  # A2A Python SDK (#481's "AgentCard emission round-trips with a
+  # Python A2A SDK example" criterion).
+  # ----------------------------------------------------------------
+  interop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python A2A SDK
+        run: pip install -r tests/interop/requirements.txt
+
+      - name: Validate committed snapshots through a2a-sdk
+        run: |
+          python3 tests/interop/validate_with_a2a_sdk.py \
+            --card    tests/interop/snapshots/agent_card.json \
+            --task    tests/interop/snapshots/task_completed.json \
+            --message tests/interop/snapshots/message_user.json \
+            --strict
+
+      - name: Smoke-test reference server
+        # `reference_server.py` validates every payload through
+        # a2a-sdk on the way out — startup-time validation alone
+        # proves the AgentCard shape is round-trip-clean. We then
+        # round-trip the live response through the standalone
+        # validator too, via tempfiles (the validator checks
+        # Path.is_file() and /dev/stdin / pipes don't satisfy that).
+        run: |
+          python3 tests/interop/reference_server.py --port 14041 &
+          SERVER_PID=$!
+          # Wait for the listener to bind.
+          for _ in $(seq 1 50); do
+            if curl -fsS http://127.0.0.1:14041/.well-known/agent.json >/dev/null; then
+              break
+            fi
+            sleep 0.1
+          done
+          curl -fsS http://127.0.0.1:14041/.well-known/agent.json > /tmp/live_card.json
+          python3 tests/interop/validate_with_a2a_sdk.py --card /tmp/live_card.json --strict
+          curl -fsS -X POST http://127.0.0.1:14041/ \
+            -H 'content-type: application/json' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"tasks/send","params":{"id":"t_1","contextId":"ctx_1","message":{"kind":"message","messageId":"m1","role":"user","parts":[{"type":"text","text":"hi"}]}}}' \
+            > /tmp/resp.json
+          cat /tmp/resp.json
+          # Extract `result` and re-validate as a Task.
+          python3 -c "import json; print(json.dumps(json.load(open('/tmp/resp.json'))['result']))" > /tmp/live_task.json
+          python3 tests/interop/validate_with_a2a_sdk.py --task /tmp/live_task.json --strict
+          kill $SERVER_PID
+          wait $SERVER_PID 2>/dev/null || true
+
+  # ----------------------------------------------------------------
+  # Cross-framework — Lex client (examples/04) talks to the Python
+  # reference server, and we assert on the observed output.
+  # ----------------------------------------------------------------
+  cross-framework-example:
+    runs-on: ubuntu-latest
+    needs: [lex, interop]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python A2A SDK
+        run: pip install -r tests/interop/requirements.txt
+
+      - name: Install Lex toolchain
+        run: |
+          set -euxo pipefail
+          LEX_VERSION="0.9.5"
+          curl -fsSL -o /tmp/lex.tgz \
+            "https://github.com/alpibrusl/lex-lang/releases/download/v${LEX_VERSION}/lex-v${LEX_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          tar -xzf /tmp/lex.tgz -C /tmp/
+          echo "/tmp/lex-v${LEX_VERSION}-x86_64-unknown-linux-gnu" >> "$GITHUB_PATH"
+
+      - name: Install lex deps
+        run: lex pkg install
+
+      - name: Start reference server
+        run: |
+          python3 tests/interop/reference_server.py --port 4041 > /tmp/ref.log 2>&1 &
+          echo $! > /tmp/ref.pid
+          for _ in $(seq 1 50); do
+            if curl -fsS http://127.0.0.1:4041/.well-known/agent.json >/dev/null; then
+              break
+            fi
+            sleep 0.1
+          done
+
+      - name: Run cross-framework example
+        run: |
+          output=$(lex run --allow-effects \
+            io,time,crypto,random,sql,fs_read,fs_write,net,concurrent \
+            examples/04_calls_public_agent.lex demo)
+          echo "$output"
+          # Assertion 1: discovery returned the peer's name
+          echo "$output" | grep -F "card: name=py-echo"
+          # Assertion 2: send_task returned state=completed and echoed our text
+          echo "$output" | grep -F "send-task: state=completed text=pong: hello"
+          # Assertion 3: empty input got spec-denied (-32099) from the Python server
+          echo "$output" | grep -F "send-task-denied: code=-32099"
+
+      - name: Stop reference server
+        if: always()
+        run: |
+          if [ -f /tmp/ref.pid ]; then
+            kill $(cat /tmp/ref.pid) 2>/dev/null || true
+          fi
+          [ -f /tmp/ref.log ] && cat /tmp/ref.log

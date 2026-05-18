@@ -95,7 +95,13 @@ fn decode_statuses(lines :: List[Str]) -> List[tk.StatusUpdate] {
 }
 
 fn decode_status(j :: jv.Json) -> Option[tk.StatusUpdate] {
-  match jv.get_field(j, "id") {
+  # Tolerate both modern (`taskId`) and legacy (`id`) framing — older
+  # A2A reference servers still emit the bare `id` form.
+  let id_field := match jv.get_field(j, "taskId") {
+    Some(v) => Some(v),
+    None    => jv.get_field(j, "id"),
+  }
+  match id_field {
     None => None,
     Some(idj) => match jv.as_str(idj) {
       None => None,

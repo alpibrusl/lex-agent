@@ -68,7 +68,7 @@ fn is_terminal(s :: TaskState) -> Bool {
 
 type Task = {
   id :: Str,
-  session_id :: Str,
+  context_id :: Str,
   state :: TaskState,
   message :: Option[msg.Message],
   artifacts :: List[msg.Artifact],
@@ -76,10 +76,10 @@ type Task = {
 }
 
 # Construct a fresh task in `submitted` state.
-fn submitted(id :: Str, session_id :: Str, initial :: msg.Message) -> Task {
+fn submitted(id :: Str, context_id :: Str, initial :: msg.Message) -> Task {
   {
     id: id,
-    session_id: session_id,
+    context_id: context_id,
     state: TSSubmitted,
     message: None,
     artifacts: [],
@@ -152,7 +152,7 @@ fn advance(
     }
     Ok({
       id: t.id,
-      session_id: t.session_id,
+      context_id: t.context_id,
       state: to,
       message: m,
       artifacts: t.artifacts,
@@ -170,7 +170,7 @@ fn add_artifact(t :: Task, a :: msg.Artifact) -> Result[Task, TaskError] {
   } else {
     Ok({
       id: t.id,
-      session_id: t.session_id,
+      context_id: t.context_id,
       state: t.state,
       message: t.message,
       artifacts: list.concat(t.artifacts, [a]),
@@ -183,8 +183,9 @@ fn add_artifact(t :: Task, a :: msg.Artifact) -> Result[Task, TaskError] {
 
 fn task_to_json(t :: Task) -> jv.Json {
   let base := [
+    ("kind",       JStr("task")),
     ("id",         JStr(t.id)),
-    ("sessionId",  JStr(t.session_id)),
+    ("contextId",  JStr(t.context_id)),
     ("status",     JObj([("state", JStr(state_label(t.state)))])),
     ("artifacts",  JList(list.map(t.artifacts, msg.artifact_to_json))),
     ("history",    JList(list.map(t.history,   msg.message_to_json))),
@@ -217,9 +218,10 @@ fn status_update(t :: Task, m :: Option[msg.Message]) -> StatusUpdate {
 
 fn status_to_json(u :: StatusUpdate) -> jv.Json {
   let base := [
-    ("id",    JStr(u.task_id)),
-    ("state", JStr(state_label(u.state))),
-    ("final", JBool(u.final)),
+    ("kind",      JStr("status-update")),
+    ("taskId",    JStr(u.task_id)),
+    ("state",     JStr(state_label(u.state))),
+    ("final",     JBool(u.final)),
   ]
   match u.message {
     None    => JObj(base),

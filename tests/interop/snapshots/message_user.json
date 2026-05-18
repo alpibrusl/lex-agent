@@ -1,0 +1,8 @@
+{
+  "kind": "message",
+  "messageId": "msg_in_1",
+  "role": "user",
+  "parts": [
+    {"type": "text", "text": "hello"}
+  ]
+}

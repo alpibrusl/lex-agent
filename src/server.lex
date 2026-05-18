@@ -112,12 +112,15 @@ fn handle_method(agent :: AgentDef, req :: proto.Request) -> [io, time, crypto, 
 
 # ---- tasks/send --------------------------------------------------
 #
-# Wire shape:
+# Wire shape (A2A v0.3-compatible):
 #
 #   { "params": {
 #       "id":        "task_...",
-#       "sessionId": "sess_...",
-#       "message":   { "role": "user", "parts": [...] },
+#       "contextId": "ctx_...",                  # legacy `sessionId` still accepted
+#       "message":   { "kind": "message",
+#                      "messageId": "msg_...",
+#                      "role": "user",
+#                      "parts": [...] },
 #       "skill":     "<capability_name>"        # extension to vanilla A2A
 #   } }
 #
@@ -132,19 +135,37 @@ fn handle_tasks_send(
   let params := req.params
   match required_str(params, "id") {
     Err(e) => proto.fail(req.id, proto.err_invalid_params(), e),
-    Ok(task_id) => match required_str(params, "sessionId") {
+    Ok(task_id) => match required_context_id(params) {
       Err(e) => proto.fail(req.id, proto.err_invalid_params(), e),
-      Ok(sess_id) => match required_obj(params, "message") {
+      Ok(ctx_id) => match required_obj(params, "message") {
         Err(e) => proto.fail(req.id, proto.err_invalid_params(), e),
         Ok(mj) => match msg.parse_message(mj) {
           Err(e) => proto.fail(req.id, proto.err_invalid_params(),
             str.concat("invalid message: ", e)),
           Ok(m) => {
             let skill_name := optional_str(params, "skill")
-            dispatch_skill(agent, req.id, task_id, sess_id, m, skill_name)
+            dispatch_skill(agent, req.id, task_id, ctx_id, m, skill_name)
           },
         },
       },
+    },
+  }
+}
+
+# Accept `contextId` (v0.3+ canonical) OR `sessionId` (legacy). At
+# least one must be present.
+fn required_context_id(params :: jv.Json) -> Result[Str, Str] {
+  match jv.get_field(params, "contextId") {
+    Some(v) => match jv.as_str(v) {
+      Some(s) => Ok(s),
+      None    => Err("contextId must be string"),
+    },
+    None => match jv.get_field(params, "sessionId") {
+      Some(v) => match jv.as_str(v) {
+        Some(s) => Ok(s),
+        None    => Err("sessionId must be string"),
+      },
+      None => Err("missing param: contextId (or legacy sessionId)"),
     },
   }
 }
@@ -153,7 +174,7 @@ fn dispatch_skill(
   agent :: AgentDef,
   rpc_id :: proto.RpcId,
   task_id :: Str,
-  sess_id :: Str,
+  ctx_id :: Str,
   m :: msg.Message,
   skill_name :: Str
 ) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] proto.Response {
@@ -166,7 +187,7 @@ fn dispatch_skill(
   match resolved {
     None => proto.fail(rpc_id, proto.err_unsupported_op(),
       str.concat("unknown skill: ", skill_name)),
-    Some(skill) => run_skill(skill, rpc_id, task_id, sess_id, m),
+    Some(skill) => run_skill(skill, rpc_id, task_id, ctx_id, m),
   }
 }
 
@@ -174,7 +195,7 @@ fn run_skill(
   skill :: Skill,
   rpc_id :: proto.RpcId,
   task_id :: Str,
-  sess_id :: Str,
+  ctx_id :: Str,
   m :: msg.Message
 ) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] proto.Response {
   # Build the bindings the precondition expects. v0.1 exposes a
@@ -189,13 +210,16 @@ fn run_skill(
     Inconclusive(reason) => proto.fail(rpc_id, proto.err_spec_denied(),
       str.concat("spec-inconclusive: ", reason)),
     Allow => {
-      let initial := tk.submitted(task_id, sess_id, m)
+      let initial := tk.submitted(task_id, ctx_id, m)
       let advanced := match tk.advance(initial, TSWorking, None) {
         Ok(t)  => t,
         Err(_) => initial,
       }
       let outcome := skill.handle(m)
-      let with_reply := match tk.advance(advanced, outcome.next_state, outcome.reply) {
+      # Stamp a server-generated `messageId` on any reply the handler
+      # left blank — A2A requires a non-empty id on every Message.
+      let stamped_reply := stamp_reply_id(outcome.reply)
+      let with_reply := match tk.advance(advanced, outcome.next_state, stamped_reply) {
         Ok(t)  => t,
         Err(_) => advanced,
       }
@@ -208,6 +232,24 @@ fn run_skill(
         })
       proto.ok(rpc_id, tk.task_to_json(final_task))
     },
+  }
+}
+
+# Stamp a fresh messageId onto a reply if the handler returned a
+# blank one (pure builders default to ""). Pass-through if the
+# handler supplied an explicit id.
+fn stamp_reply_id(r :: Option[msg.Message]) -> [crypto, random] Option[msg.Message] {
+  match r {
+    None    => None,
+    Some(m) => Some(stamp_message(m)),
+  }
+}
+
+fn stamp_message(m :: msg.Message) -> [crypto, random] msg.Message {
+  if str.is_empty(m.message_id) {
+    msg.with_message_id(m, msg.gen_message_id())
+  } else {
+    m
   }
 }
 

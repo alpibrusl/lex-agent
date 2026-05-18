@@ -78,10 +78,12 @@ $ curl http://localhost:4040/.well-known/agent.json
 $ curl -X POST http://localhost:4040/ \
     -H 'content-type: application/json' \
     -d '{"jsonrpc":"2.0","id":1,"method":"tasks/send","params":{
-      "id":"t_1","sessionId":"s_1",
-      "message":{"role":"user","parts":[{"type":"text","text":"hello"}]}}}'
+      "id":"t_1","contextId":"ctx_1",
+      "message":{"kind":"message","messageId":"m_in_1","role":"user",
+                  "parts":[{"type":"text","text":"hello"}]}}}'
 { "jsonrpc": "2.0", "id": 1,
-  "result": { "id": "t_1", "status": { "state": "completed" }, ... } }
+  "result": { "kind": "task", "id": "t_1", "contextId": "ctx_1",
+              "status": { "state": "completed" }, ... } }
 ```
 
 ## Surface
@@ -159,11 +161,25 @@ lex test
 
 Suites cover:
 
-- Message / Part / Artifact parse + round-trip
-- Task transition table (legal moves and rejected moves)
+- Message / Part / Artifact parse + round-trip — including the
+  A2A v0.3 `kind`/`messageId` wire fields
+- Task transition table (legal moves and rejected moves) plus the
+  `contextId` / `kind:"task"` wire-shape assertions
 - JSON-RPC envelope parse + render (id polymorphism, error codes)
 - SSE encode/decode (incl. `[DONE]` marker handling, comment skipping)
-- AgentCard JSON shape (constraints flow into `inputSchema`)
+- AgentCard JSON shape — constraints flow into `inputSchema`, `tags`
+  is emitted on every skill
+
+## Interop with the Google A2A Python SDK
+
+`tests/interop/` validates the wire format against the official
+[`a2a-sdk`](https://pypi.org/project/a2a-sdk/) — round-tripping every
+shape lex-agent emits (AgentCard, Task, Message) through the SDK's
+JSON-mode Pydantic types. CI's `interop` job runs the snapshot
+validator and a smoke test against the in-tree Python reference
+server; the `cross-framework-example` job exercises
+`examples/04_calls_public_agent.lex` end-to-end (Lex client → Python
+server). See `tests/interop/README.md` for the local run-through.
 
 ## Examples
 
@@ -180,6 +196,11 @@ lex run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurren
 # structured access logs, side-route composition).
 lex run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent \
     examples/03_mount_with_lex_web.lex main
+
+# Lex client → Python A2A reference server (cross-framework interop;
+# run `python3 tests/interop/reference_server.py &` first).
+lex run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent \
+    examples/04_calls_public_agent.lex demo
 ```
 
 ## Transport

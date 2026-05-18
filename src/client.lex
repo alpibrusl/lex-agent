@@ -24,6 +24,7 @@ import "std.bytes" as bytes
 import "std.list"  as list
 import "std.str"   as str
 import "std.map"   as map
+import "std.iter"  as iter
 
 import "lex-schema/json_value" as jv
 
@@ -98,25 +99,39 @@ fn pull_str(j :: jv.Json, field :: Str, default :: Str) -> Str {
 
 type SendOpts = {
   task_id :: Str,
-  session_id :: Str,
+  context_id :: Str,
   skill :: Str,         # empty string ⇒ rely on server default
 }
 
 fn default_opts() -> SendOpts {
-  { task_id: "task_0", session_id: "sess_0", skill: "" }
+  { task_id: "task_0", context_id: "ctx_0", skill: "" }
 }
 
-# Build the JSON-RPC params payload for `tasks/send`.
+# Build the JSON-RPC params payload for `tasks/send`. Pure — callers
+# stamp a fresh messageId on the Message via `stamp_message` BEFORE
+# calling, so this function stays free of effects (the caller already
+# owns the `[crypto, random]` row from gen_message_id anyway).
 fn build_send_params(m :: msg.Message, opts :: SendOpts) -> jv.Json {
   let base := [
     ("id",        JStr(opts.task_id)),
-    ("sessionId", JStr(opts.session_id)),
+    ("contextId", JStr(opts.context_id)),
     ("message",   msg.message_to_json(m)),
   ]
   if str.is_empty(opts.skill) {
     JObj(base)
   } else {
     JObj(list.concat(base, [("skill", JStr(opts.skill))]))
+  }
+}
+
+# Stamp a fresh messageId on the outbound message if it's blank.
+# Split out from build_send_params so the pure params-builder stays
+# pure — only this helper carries the [crypto, random] row.
+fn stamp_message(m :: msg.Message) -> [crypto, random] msg.Message {
+  if str.is_empty(m.message_id) {
+    msg.with_message_id(m, msg.gen_message_id())
+  } else {
+    m
   }
 }
 
@@ -137,9 +152,11 @@ fn send_task(
   peer_url :: Str,
   m :: msg.Message,
   opts :: SendOpts
-) -> [net] Result[jv.Json, proto.RpcError] {
+) -> [net, crypto, random] Result[jv.Json, proto.RpcError] {
+  let stamped := stamp_message(m)
+  let params := build_send_params(stamped, opts)
   let body := build_envelope(proto.method_tasks_send(),
-    build_send_params(m, opts), IdStr(opts.task_id))
+    params, IdStr(opts.task_id))
   match http.post(peer_url, bytes.from_str(body), "application/json") {
     Err(e) => Err(proto.error(proto.err_internal(),
       str.concat("http error: ", http_err_str(e)))),
@@ -195,9 +212,11 @@ fn subscribe(
   m :: msg.Message,
   opts :: SendOpts,
   api_key :: Str
-) -> [net] Result[List[tk.StatusUpdate], Str] {
+) -> [net, crypto, random] Result[List[tk.StatusUpdate], Str] {
+  let stamped := stamp_message(m)
+  let params := build_send_params(stamped, opts)
   let body := build_envelope(proto.method_tasks_send_subscribe(),
-    build_send_params(m, opts), IdStr(opts.task_id))
+    params, IdStr(opts.task_id))
   let headers := build_headers(api_key)
   match http.stream_lines(peer_url, headers, body) {
     Err(e) => Err(str.concat("stream error: ", e)),
@@ -230,10 +249,5 @@ fn decode_iter(it :: Iter[Str]) -> List[tk.StatusUpdate] {
 
 # Inline iter→list, ignoring effects since stream_lines yields pure.
 fn iter_to_list(it :: Iter[Str]) -> List[Str] {
-  # Re-use std.iter via a local alias to keep imports tight.
-  iter_to_list_impl(it)
+  iter.to_list(it)
 }
-
-# Indirection so callers can override in tests if needed.
-import "std.iter" as iter
-fn iter_to_list_impl(it :: Iter[Str]) -> List[Str] { iter.to_list(it) }

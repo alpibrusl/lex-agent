@@ -5,6 +5,9 @@ lex         = "0.9.5"
 description = "Pure-Lex implementation of the Google Agent2Agent (A2A) protocol — AgentCard, JSON-RPC 2.0 envelope, Task lifecycle, SSE streaming."
 
 [dependencies]
-lex-schema = { path = "../lex-schema" }
-lex-spec   = { path = "../lex-spec" }
-lex-web    = { path = "../lex-web" }
+# git refs (not path) so `lex pkg install` works in CI and on a
+# fresh clone — sibling-checkout layouts aren't a precondition.
+# Matches alpibrusl/lex-web's lex.toml convention.
+lex-schema = { git = "https://github.com/alpibrusl/lex-schema" }
+lex-spec   = { git = "https://github.com/alpibrusl/lex-spec" }
+lex-web    = { git = "https://github.com/alpibrusl/lex-web" }
