@@ -6,12 +6,16 @@
 #   - JSON-RPC dispatch at `/`  (POST)
 #   - Spec precondition gating before any handler runs
 #
-# v0.1 wires `tasks/send` and `tasks/get`. `tasks/cancel` and
-# `tasks/sendSubscribe` are stubbed — the SSE path needs the live
-# write half of `std.net` which is in flight upstream (lex-lang#487
-# closed eager-buffer; truly persistent SSE write is a follow-up).
-# For now `sendSubscribe` falls back to a single-frame stream with
-# the final task state.
+# v0.2 wires `tasks/send`, `tasks/get`, and `tasks/cancel` against
+# an optional `std.conc` actor-backed task store (see `src/store.lex`).
+# When `AgentDef.store` is `None`, `tasks/get` returns
+# `task-not-found` and `tasks/cancel` returns `not-cancelable` —
+# matching the pre-store v0.1 behaviour. When set via `with_store`,
+# both methods resolve against the live store. `tasks/sendSubscribe`
+# is stubbed — the SSE path needs the live write half of `std.net`
+# which is in flight upstream (lex-lang#487 closed eager-buffer;
+# truly persistent SSE write is a follow-up). For now `sendSubscribe`
+# falls back to a single-frame stream with the final task state.
 #
 # Effects: the dispatch chain declares the wide row
 # `[io, time, crypto, random, sql, fs_read, fs_write, net, concurrent]`
@@ -29,6 +33,7 @@
 
 import "std.list" as list
 import "std.str"  as str
+import "std.conc" as conc
 
 import "lex-schema/json_value" as jv
 
@@ -40,6 +45,7 @@ import "./agent_card" as card
 import "./task"       as tk
 import "./message"    as msg
 import "./stream"     as ssem
+import "./store"      as store
 
 # ---- Handler signature -------------------------------------------
 #
@@ -67,14 +73,26 @@ type Skill = {
 }
 
 # ---- AgentDef ----------------------------------------------------
+#
+# `store` is an optional `std.conc` actor address; when present, the
+# server writes every successful dispatch into it and reads from it
+# on `tasks/get` / `tasks/cancel`. When `None`, those methods return
+# their respective "not supported" errors (the pre-v0.2 behaviour).
 
 type AgentDef = {
   card :: card.AgentCard,
   skills :: List[Skill],
+  store :: Option[conc.Addr],
 }
 
 fn make_agent_def(c :: card.AgentCard, skills :: List[Skill]) -> AgentDef {
-  { card: c, skills: skills }
+  { card: c, skills: skills, store: None }
+}
+
+# Attach a task store. Callers spawn the actor via
+# `store.spawn_store()` once at boot and pipe the address in here.
+fn with_store(agent :: AgentDef, addr :: conc.Addr) -> AgentDef {
+  { card: agent.card, skills: agent.skills, store: Some(addr) }
 }
 
 # ---- Routing -----------------------------------------------------
@@ -187,12 +205,13 @@ fn dispatch_skill(
   match resolved {
     None => proto.fail(rpc_id, proto.err_unsupported_op(),
       str.concat("unknown skill: ", skill_name)),
-    Some(skill) => run_skill(skill, rpc_id, task_id, ctx_id, m),
+    Some(skill) => run_skill(skill, agent.store, rpc_id, task_id, ctx_id, m),
   }
 }
 
 fn run_skill(
   skill :: Skill,
+  store_ref :: Option[conc.Addr],
   rpc_id :: proto.RpcId,
   task_id :: Str,
   ctx_id :: Str,
@@ -230,8 +249,22 @@ fn run_skill(
             Err(_) => acc,
           }
         })
+      # If a store is attached, persist the final task — every
+      # successful dispatch ends with the latest snapshot available
+      # to `tasks/get` and `tasks/cancel`.
+      let __discard := persist(store_ref, final_task)
       proto.ok(rpc_id, tk.task_to_json(final_task))
     },
+  }
+}
+
+# Fire-and-forget write into the optional store. Pulled out as its
+# own fn so the [concurrent] effect stays localised and the call
+# site stays readable.
+fn persist(s :: Option[conc.Addr], t :: tk.Task) -> [concurrent] Unit {
+  match s {
+    None       => (),
+    Some(addr) => store.put(addr, t),
   }
 }
 
@@ -278,33 +311,58 @@ fn first_text_part(parts :: List[msg.Part]) -> Str {
 
 # ---- tasks/get ---------------------------------------------------
 #
-# v0.1: we don't yet maintain a persistent task store inside the
-# server module (that's a `std.conc` actor pattern — landed in
-# `examples/02_persistent_store.lex`). The default behaviour returns
-# `task-not-found`. Callers wanting persistence wrap this server in
-# their own actor-backed store.
+# When a store is attached (`with_store`), looks the task up by id
+# and returns it as the JSON-RPC result. Without a store, replies
+# `-32001 task-not-found` — same shape as the v0.1 stub so callers
+# that didn't opt in see no behaviour change.
 
 fn handle_tasks_get(
   agent :: AgentDef,
   req :: proto.Request
 ) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] proto.Response {
-  let _ := agent
   match required_str(req.params, "id") {
     Err(e) => proto.fail(req.id, proto.err_invalid_params(), e),
-    Ok(id) => proto.fail(req.id, proto.err_task_not_found(),
-      str.concat("task not found: ", id)),
+    Ok(id) => match agent.store {
+      None       => proto.fail(req.id, proto.err_task_not_found(),
+        str.concat("task not found: ", id)),
+      Some(addr) => match store.get(addr, id) {
+        None    => proto.fail(req.id, proto.err_task_not_found(),
+          str.concat("task not found: ", id)),
+        Some(t) => proto.ok(req.id, tk.task_to_json(t)),
+      },
+    },
   }
 }
+
+# ---- tasks/cancel -----------------------------------------------
+#
+# Routes the cancel through the store actor, which guards the
+# transition via `tk.advance(t, TSCanceled, None)` — already-terminal
+# tasks (completed / failed / canceled) surface as `-32002
+# not-cancelable`. Missing-id surfaces as `task-not-found`.
 
 fn handle_tasks_cancel(
   agent :: AgentDef,
   req :: proto.Request
 ) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] proto.Response {
-  let _ := agent
   match required_str(req.params, "id") {
     Err(e) => proto.fail(req.id, proto.err_invalid_params(), e),
-    Ok(id) => proto.fail(req.id, proto.err_not_cancelable(),
-      str.concat("no cancel-tracking actor for: ", id)),
+    Ok(id) => match agent.store {
+      None       => proto.fail(req.id, proto.err_not_cancelable(),
+        str.concat("no cancel-tracking actor for: ", id)),
+      Some(addr) => match store.cancel(addr, id) {
+        Err(reason) => {
+          if str.contains(reason, "not found") {
+            proto.fail(req.id, proto.err_task_not_found(),
+              str.concat("task not found: ", id))
+          } else {
+            proto.fail(req.id, proto.err_not_cancelable(),
+              str.concat("not cancelable: ", reason))
+          }
+        },
+        Ok(t) => proto.ok(req.id, tk.task_to_json(t)),
+      },
+    },
   }
 }
 

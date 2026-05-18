@@ -98,6 +98,7 @@ $ curl -X POST http://localhost:4040/ \
 | `src/client.lex`     | `send_task(peer_url, msg, opts)` + `fetch_agent_card(peer_url)` + `subscribe(...)` over SSE |
 | `src/stream.lex`     | SSE encoder (`data: <json>\n\n`) + decoder over `Iter[Str]` |
 | `src/mount.lex`      | `mount(router, agent_def)` — register the two A2A routes onto a `lex-web/router.Router` |
+| `src/store.lex`      | `std.conc`-actor task store backing `tasks/get` + `tasks/cancel` — opt in via `srv.with_store` |
 
 Every `src/*` module is pure Lex. The server's `dispatch_request`
 declares the wide row `[io, time, crypto, random, sql, fs_read,
@@ -107,19 +108,22 @@ JSON-RPC route without an effect-row impedance. Handlers freely use
 the subset they need; the type checker keeps the per-fn signature
 honest.
 
-## A2A method coverage (v0.1)
+## A2A method coverage
 
 | JSON-RPC method | Status |
 |---|---|
 | `tasks/send`           | Full |
-| `tasks/get`            | Skeleton (returns `task-not-found`; real persistence is an actor-backed wrapper — see roadmap) |
-| `tasks/cancel`         | Skeleton (returns `not-cancelable`) |
+| `tasks/get`            | Full when a store is attached via `srv.with_store(agent, store.spawn_store())`; returns `-32001 task-not-found` otherwise (the v0.1 stub behaviour, preserved for callers that don't opt in) |
+| `tasks/cancel`         | Full with a store: transitions a non-terminal task to `canceled` via `tk.advance`; without a store, returns `-32002 not-cancelable` |
 | `tasks/sendSubscribe`  | Single-frame fallback today; live SSE write-half follows `lex-lang#487` upstream |
 
-Persistent task storage / cancellation is a deliberate v0.1 deferral:
-the surface that matters for interop testing (AgentCard + `tasks/send`)
-is what shipped first. A `std.conc`-actor wrapper that backs
-`tasks/get` and `tasks/cancel` is on the roadmap.
+The task store is in-memory (an actor's state Map), not durable
+across process restarts — that's a follow-up. Every successful
+`tasks/send` writes the final Task into the store; `tasks/get`
+returns the latest snapshot; `tasks/cancel` flips a non-terminal
+task to `canceled` (already-terminal tasks surface as
+`not-cancelable`). See `examples/05_persistent_store.lex` for the
+end-to-end wiring.
 
 ## Capability preconditions
 
@@ -138,20 +142,22 @@ codes. Pair with `lex-llm`'s outbound-capability filter and you get
 **evaluate-at-both-ends** by construction — the receiver doesn't trust
 the sender's gate.
 
-## What's NOT in v0.1
+## What's still deferred
 
 - **OAuth / DID identity.** A2A's auth story is layered; v0.1 ships
   unauthenticated for local-dev.
-- **Persistent task store.** `tasks/get` returns `task-not-found` today;
-  the actor-backed wrapper lands as a follow-up.
 - **True streaming SSE write half.** `tasks/sendSubscribe` falls back
   to a single-frame response when the upstream `std.net` streaming
   write surface isn't available; one-frame interop with Python A2A
   clients works.
+- **Durable task store.** `src/store.lex` is in-memory; a
+  `std.sql`-backed variant that survives restarts is a follow-up.
 - **Agent registry.** Platform-layer; out of scope for the
   protocol-layer package.
 
-These mirror the "out of scope" list in issue #481; v0.2 revisits each.
+These mirror the "out of scope" list in issue #481. **Persistent
+task store** moved out of this list — `src/store.lex` + `with_store`
+landed it (see `examples/05_persistent_store.lex`).
 
 ## Tests
 
@@ -169,6 +175,8 @@ Suites cover:
 - SSE encode/decode (incl. `[DONE]` marker handling, comment skipping)
 - AgentCard JSON shape — constraints flow into `inputSchema`, `tags`
   is emitted on every skill
+- Task store actor — put/get round-trip, cancel transitions,
+  unknown-id and double-cancel error paths (all under `[concurrent]`)
 
 ## Interop with the Google A2A Python SDK
 
@@ -201,6 +209,11 @@ lex run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurren
 # run `python3 tests/interop/reference_server.py &` first).
 lex run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent \
     examples/04_calls_public_agent.lex demo
+
+# Same agent on top of a `std.conc` task store — `tasks/get` and
+# `tasks/cancel` now resolve against the live task table.
+lex run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent \
+    examples/05_persistent_store.lex demo
 ```
 
 ## Transport

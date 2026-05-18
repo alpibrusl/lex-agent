@@ -127,6 +127,43 @@ artifacts can't be added to a terminal task.
 
 ---
 
+## Task store
+
+`src/store.lex` is a `std.conc` actor wrapping `Map[Str, tk.Task]`.
+The server writes the final Task after every successful dispatch
+and reads back on `tasks/get` / `tasks/cancel`. Wire it in once at
+boot:
+
+```lex
+let agent := srv.with_store(
+  srv.make_agent_def(my_card, my_skills),
+  store.spawn_store())
+```
+
+Rules:
+
+- **Server owns the put.** Handlers don't touch the store; the
+  server stamps the final task into it from `run_skill`. Never
+  call `store.put` from a handler — you'd race the server's own
+  write and the lifecycle assertions on `tk.advance` would lose
+  their authority.
+- **`tasks/cancel` goes through `tk.advance`.** The store calls
+  `tk.advance(t, TSCanceled, None)`; terminal tasks surface as
+  `Err(InvalidTransition({...}))`. The server maps that to
+  `-32002 not-cancelable`. Don't shortcut by re-writing the task
+  record with a different `state` — the lifecycle is exhaustive
+  for a reason.
+- **In-memory only.** The store's state is the actor's, lost at
+  process exit. A durable variant (sqlite-backed) is a follow-up.
+- **One store per agent.** The `AgentDef.store :: Option[conc.Addr]`
+  holds one address. Sharing a store across two agents is
+  technically possible (just pass the same addr to both
+  `with_store` calls) but the task-id namespace would need to be
+  globally unique across both — A2A doesn't say anything about
+  that, so it's a "your problem" pattern.
+
+---
+
 ## AgentCard skill emission
 
 Skills come from the `Capability` values you attached when building
