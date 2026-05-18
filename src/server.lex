@@ -240,12 +240,16 @@ fn run_skill(
 # handler supplied an explicit id.
 fn stamp_reply_id(r :: Option[msg.Message]) -> [crypto, random] Option[msg.Message] {
   match r {
-    None => None,
-    Some(m) => if str.is_empty(m.message_id) {
-      Some(msg.with_message_id(m, msg.gen_message_id()))
-    } else {
-      Some(m)
-    },
+    None    => None,
+    Some(m) => Some(stamp_message(m)),
+  }
+}
+
+fn stamp_message(m :: msg.Message) -> [crypto, random] msg.Message {
+  if str.is_empty(m.message_id) {
+    msg.with_message_id(m, msg.gen_message_id())
+  } else {
+    m
   }
 }
 
