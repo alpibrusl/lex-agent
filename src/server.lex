@@ -10,12 +10,11 @@
 # an optional `std.conc` actor-backed task store (see `src/store.lex`).
 # When `AgentDef.store` is `None`, `tasks/get` returns
 # `task-not-found` and `tasks/cancel` returns `not-cancelable` —
-# matching the pre-store v0.1 behaviour. When set via `with_store`,
-# both methods resolve against the live store. `tasks/sendSubscribe`
-# is stubbed — the SSE path needs the live write half of `std.net`
-# which is in flight upstream (lex-lang#487 closed eager-buffer;
-# truly persistent SSE write is a follow-up). For now `sendSubscribe`
-# falls back to a single-frame stream with the final task state.
+# matching the pre-store v0.1 behaviour. `tasks/sendSubscribe` now
+# emits proper SSE frames via `dispatch_subscribe_str` (concatenated
+# Str for lex-web callers) or `dispatch_sse_frames` (List[Str] for
+# `net.serve_fn` / BodyStream callers). Both paths were unblocked
+# by lex-lang#487. mount.lex routes SSE requests automatically.
 #
 # Effects: the dispatch chain declares the wide row
 # `[io, time, crypto, random, sql, fs_read, fs_write, net, concurrent]`
@@ -122,7 +121,7 @@ fn emit_trail(
     None    => (),
     Some(l) => {
       let __evt := trail.append(l, kind, parent, payload)
-      ()
+      (),
     },
   }
 }
@@ -167,8 +166,10 @@ fn handle_method(agent :: AgentDef, req :: proto.Request) -> [io, time, crypto, 
   } else { if req.method == proto.method_tasks_cancel() {
     handle_tasks_cancel(agent, req)
   } else { if req.method == proto.method_tasks_send_subscribe() {
-    # v0.1: same path as `tasks/send`. Caller still sees the final
-    # task state; live SSE streaming layered on top in `serve_sse`.
+    # Fallback for callers using `dispatch_request` directly. mount.lex
+    # detects the SSE method early and routes to `dispatch_subscribe_str`
+    # instead, which returns properly framed SSE. This path still returns
+    # a JSON-RPC response for backward-compatible non-SSE consumers.
     handle_tasks_send(agent, req)
   } else {
     proto.fail(req.id, proto.err_method_not_found(),
@@ -476,4 +477,159 @@ fn find_skill(skills :: List[Skill], name :: Str) -> Option[Skill] {
 
 fn agent_card_response(agent :: AgentDef) -> Str {
   card.card_to_pretty(agent.card)
+}
+
+# ---- tasks/sendSubscribe — SSE body builders --------------------
+#
+# `is_subscribe_body` peeks at the method field so mount.lex can
+# route the request to the SSE path without a full parse round-trip.
+#
+# `dispatch_subscribe_str` runs the skill and concatenates all SSE
+# frames into a single `Str`. For lex-web callers (where
+# `resp.Response.body :: Str`) this is the right function; conformant
+# SSE clients parse the events correctly when the response carries
+# `content-type: text/event-stream`.
+#
+# For callers using `std.net.serve_fn` directly, call
+# `dispatch_sse_frames` and wrap the result with
+# `BodyStream(iter.from_list(frames))` for true chunked streaming.
+
+fn is_subscribe_body(body :: Str) -> Bool {
+  str.contains(body, "\"tasks/sendSubscribe\"")
+}
+
+fn dispatch_subscribe_str(
+  agent :: AgentDef,
+  body :: Str
+) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] Str {
+  list.fold(dispatch_sse_frames(agent, body), "",
+    fn (acc :: Str, frame :: Str) -> Str { str.concat(acc, frame) })
+}
+
+fn dispatch_sse_frames(
+  agent :: AgentDef,
+  body :: Str
+) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] List[Str] {
+  match proto.parse_request(body) {
+    Err(rpcerr) => [ssem.encode_data(proto.response_to_json(ResErr(IdNull, rpcerr)))],
+    Ok(req)     => build_subscribe_frames(agent, req),
+  }
+}
+
+fn build_subscribe_frames(
+  agent :: AgentDef,
+  req :: proto.Request
+) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] List[Str] {
+  let params := req.params
+  match required_str(params, "id") {
+    Err(e) => [sse_error_frame(req.id, proto.err_invalid_params(), e)],
+    Ok(task_id) => match required_context_id(params) {
+      Err(e) => [sse_error_frame(req.id, proto.err_invalid_params(), e)],
+      Ok(ctx_id) => match required_obj(params, "message") {
+        Err(e) => [sse_error_frame(req.id, proto.err_invalid_params(), e)],
+        Ok(mj) => match msg.parse_message(mj) {
+          Err(e) => [sse_error_frame(req.id, proto.err_invalid_params(),
+            str.concat("invalid message: ", e))],
+          Ok(m) => {
+            let recv_payload := str.join([
+              "{\"task_id\":\"", task_id,
+              "\",\"context_id\":\"", ctx_id, "\"}"], "")
+            let __recv := emit_trail(agent.trail, kinds.a2a_task_received(), None, recv_payload)
+            let skill_name := optional_str(params, "skill")
+            run_skill_subscribe(agent, req.id, task_id, ctx_id, m, skill_name)
+          },
+        },
+      },
+    },
+  }
+}
+
+fn run_skill_subscribe(
+  agent :: AgentDef,
+  rpc_id :: proto.RpcId,
+  task_id :: Str,
+  ctx_id :: Str,
+  m :: msg.Message,
+  skill_name :: Str
+) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] List[Str] {
+  let resolved := if str.is_empty(skill_name) {
+    match list.head(agent.skills) {
+      Some(s) => Some(s),
+      None    => None,
+    }
+  } else { find_skill(agent.skills, skill_name) }
+  match resolved {
+    None => [sse_error_frame(rpc_id, proto.err_unsupported_op(),
+      str.concat("unknown skill: ", skill_name))],
+    Some(skill) => emit_skill_frames(skill, agent.store, agent.trail,
+      rpc_id, task_id, ctx_id, m),
+  }
+}
+
+fn emit_skill_frames(
+  skill :: Skill,
+  store_ref :: Option[conc.Addr],
+  trail_log :: Option[trail.Log],
+  rpc_id :: proto.RpcId,
+  task_id :: Str,
+  ctx_id :: Str,
+  m :: msg.Message
+) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] List[Str] {
+  let bindings := [("args", bindings_from_message(m))]
+  match cap.gate(skill.capability, bindings) {
+    Deny(_) => {
+      let t := tk.submitted(task_id, ctx_id, m)
+      let failed := match tk.advance(t, TSFailed, None) {
+        Ok(ft) => ft,
+        Err(_) => t,
+      }
+      [ssem.encode_status(tk.status_update(failed, None))]
+    },
+    Inconclusive(_) => {
+      let t := tk.submitted(task_id, ctx_id, m)
+      let failed := match tk.advance(t, TSFailed, None) {
+        Ok(ft) => ft,
+        Err(_) => t,
+      }
+      [ssem.encode_status(tk.status_update(failed, None))]
+    },
+    Allow => {
+      let initial := tk.submitted(task_id, ctx_id, m)
+      let working := match tk.advance(initial, TSWorking, None) {
+        Ok(t)  => t,
+        Err(_) => initial,
+      }
+      let __e1 := emit_trail(trail_log, kinds.a2a_task_state_change(), None,
+        str.join(["{\"task_id\":\"", task_id,
+          "\",\"from_state\":\"submitted\",\"to_state\":\"working\"}"], ""))
+      let working_frame := ssem.encode_status(tk.status_update(working, None))
+      let outcome := skill.handle(m)
+      let stamped_reply := stamp_reply_id(outcome.reply)
+      let with_reply := match tk.advance(working, outcome.next_state, stamped_reply) {
+        Ok(t)  => t,
+        Err(_) => working,
+      }
+      let final_task := list.fold(outcome.artifacts, with_reply,
+        fn (acc :: tk.Task, a :: msg.Artifact) -> tk.Task {
+          match tk.add_artifact(acc, a) {
+            Ok(t)  => t,
+            Err(_) => acc,
+          }
+        })
+      let __e2 := emit_trail(trail_log, kinds.a2a_task_state_change(), None,
+        str.join(["{\"task_id\":\"", task_id,
+          "\",\"from_state\":\"working\",\"to_state\":\"",
+          tk.state_label(final_task.state), "\"}"], ""))
+      let __e3 := emit_msg_sent_if_reply(trail_log, task_id, stamped_reply)
+      let __discard := persist(store_ref, final_task)
+      let final_frame := ssem.encode_status(tk.status_update(final_task, stamped_reply))
+      [working_frame, final_frame]
+    },
+  }
+}
+
+# Encode a JSON-RPC error response as an SSE `data:` frame. Used for
+# parse errors and spec-denied rejections on the subscribe path.
+fn sse_error_frame(rpc_id :: proto.RpcId, code :: Int, message :: Str) -> Str {
+  ssem.encode_data(proto.response_to_json(proto.fail(rpc_id, code, message)))
 }

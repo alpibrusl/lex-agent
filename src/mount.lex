@@ -17,7 +17,14 @@
 # wide row lex-web's `route_effectful` accepts) because handler
 # closures inside `dispatch_request` may need IO, SQL, etc.
 #
+# SSE detection: when the request body contains `tasks/sendSubscribe`,
+# `rpc_route` calls `srv.dispatch_subscribe_str` and returns the
+# concatenated SSE frames with `content-type: text/event-stream`.
+# Other JSON-RPC methods take the usual `resp.json(...)` path.
+#
 # Effects: none in `mount` itself — it only builds router records.
+
+import "std.map" as map
 
 import "lex-web/ctx"      as ctx
 import "lex-web/response" as resp
@@ -34,15 +41,30 @@ fn card_route(agent :: srv.AgentDef) -> (ctx.Ctx) -> resp.Response {
   }
 }
 
-# JSON-RPC dispatch endpoint. Reads the raw body, hands it to
-# `srv.dispatch_request`, returns the response string as a JSON
-# response. The HTTP status is always 200 — JSON-RPC errors ride
-# inside the response envelope, not the HTTP layer.
+# JSON-RPC dispatch endpoint. Reads the raw body and routes:
+#   - `tasks/sendSubscribe` → SSE frames (content-type: text/event-stream)
+#   - all other methods    → JSON-RPC response (application/json)
+#
+# The HTTP status is always 200 — JSON-RPC errors ride inside the
+# response envelope, not the HTTP layer.
 fn rpc_route(agent :: srv.AgentDef) -> (ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] resp.Response {
   fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] resp.Response {
-    let body_str  := wbody.raw_body(c)
-    let response  := srv.dispatch_request(agent, body_str)
-    resp.json(response)
+    let body_str := wbody.raw_body(c)
+    if srv.is_subscribe_body(body_str) {
+      let sse_body := srv.dispatch_subscribe_str(agent, body_str)
+      {
+        status:  200,
+        body:    sse_body,
+        headers: map.from_list([
+          ("content-type",  "text/event-stream"),
+          ("cache-control", "no-cache"),
+          ("connection",    "keep-alive"),
+        ]),
+      }
+    } else {
+      let response := srv.dispatch_request(agent, body_str)
+      resp.json(response)
+    }
   }
 }
 
