@@ -164,6 +164,59 @@ Rules:
 
 ---
 
+## Trail emission
+
+Attach a `lex-trail` log via `with_trail(agent, log)` to record every
+A2A protocol method as an auditable event.
+
+### Server events
+
+| Trigger                  | Event kind              | Payload fields                              |
+|--------------------------|-------------------------|---------------------------------------------|
+| `tasks/send` received    | `a2a.task.received`     | `task_id`, `context_id`                     |
+| handler starts (→working)| `a2a.task.state_change` | `task_id`, `from_state`, `to_state`         |
+| handler completes        | `a2a.task.state_change` | `task_id`, `from_state`, `to_state`         |
+| reply present            | `a2a.message.sent`      | `task_id`, `message_id`                     |
+| `tasks/cancel` success   | `a2a.task.state_change` | `task_id`, `to_state: "canceled"`           |
+
+### Client events (`send_task_traced` / `subscribe_traced`)
+
+| Function            | Event kind          | Payload fields                      |
+|---------------------|---------------------|-------------------------------------|
+| `send_task_traced`  | `a2a.task.sent`     | `task_id`, `to_agent`, `skill`      |
+| `subscribe_traced`  | `a2a.message.sent`  | `task_id`, `to_agent`               |
+
+Events are emitted before the network call so the trail captures
+intent even when HTTP fails. Emission errors are silently discarded —
+a write failure never affects A2A dispatch.
+
+### Wiring
+
+```lex
+import "lex-trail/log" as trail
+import "../src/server" as srv
+
+# In tests:
+let log   := match trail.open_memory() { Ok(l) => l, Err(_) => ... }
+let agent := srv.with_trail(srv.make_agent_def(my_card, skills), log)
+let _resp := srv.dispatch_request(agent, body)
+
+# In production:
+let log   := match trail.open("/var/log/agent.trail") { Ok(l) => l, Err(_) => ... }
+let agent := srv.with_trail(base_agent, log)
+```
+
+Chain with `with_store` in any order — both fields are independent:
+
+```lex
+let agent :=
+  srv.with_trail(
+    srv.with_store(srv.make_agent_def(card, skills), store_addr),
+    trail_log)
+```
+
+---
+
 ## AgentCard skill emission
 
 Skills come from the `Capability` values you attached when building
@@ -228,11 +281,11 @@ rewraps `body :: Str` as `BodyStr(...)` on the way out).
 lex test
 ```
 
-5 suites, ~24 cases. Coverage: message round-trips, lifecycle
+7 suites, ~30 cases. Coverage: message round-trips, lifecycle
 transitions, JSON-RPC envelopes, SSE encode/decode, AgentCard
-shape. Examples are runnable demos (the offline dispatch demo in
-particular is a useful smoke test before standing up the HTTP
-transport).
+shape, trail emission (server + client). Examples are runnable
+demos (the offline dispatch demo in particular is a useful smoke
+test before standing up the HTTP transport).
 
 ---
 

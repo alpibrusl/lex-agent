@@ -13,6 +13,10 @@
 #      `tasks/sendSubscribe` and decode the SSE stream into typed
 #      `StatusUpdate`s via `stream.lex`.
 #
+# Trail-aware variants (`send_task_traced`, `subscribe_traced`) emit
+# an `a2a.*` event before the network call. Pass a `trail.Log` from
+# `trail.open_memory()` in tests or `trail.open(path)` in production.
+#
 # Effects: `[net]` for HTTP, `[llm]` semantic annotation when callers
 # want to gate AI-side dispatch separately. The send / subscribe
 # paths do NOT declare `[llm]` directly — they're plain HTTP — but
@@ -27,6 +31,9 @@ import "std.map"   as map
 import "std.iter"  as iter
 
 import "lex-schema/json_value" as jv
+
+import "lex-trail/log"   as trail
+import "lex-trail/kinds" as kinds
 
 import "./protocol"   as proto
 import "./agent_card" as card
@@ -250,4 +257,40 @@ fn decode_iter(it :: Iter[Str]) -> List[tk.StatusUpdate] {
 # Inline iter→list, ignoring effects since stream_lines yields pure.
 fn iter_to_list(it :: Iter[Str]) -> List[Str] {
   iter.to_list(it)
+}
+
+# ---- Trail-aware variants ----------------------------------------
+#
+# `send_task_traced` and `subscribe_traced` emit an `a2a.*` event
+# before executing the underlying network call. Emission is
+# best-effort: a write failure never surfaces to the caller.
+
+fn send_task_traced(
+  log      :: trail.Log,
+  parent   :: Option[Str],
+  peer_url :: Str,
+  m        :: msg.Message,
+  opts     :: SendOpts
+) -> [net, crypto, random, sql, time] Result[jv.Json, proto.RpcError] {
+  let payload := str.join([
+    "{\"task_id\":\"", opts.task_id,
+    "\",\"to_agent\":\"", peer_url,
+    "\",\"skill\":\"", opts.skill, "\"}"], "")
+  let __evt := trail.append(log, kinds.a2a_task_sent(), parent, payload)
+  send_task(peer_url, m, opts)
+}
+
+fn subscribe_traced(
+  log      :: trail.Log,
+  parent   :: Option[Str],
+  peer_url :: Str,
+  m        :: msg.Message,
+  opts     :: SendOpts,
+  api_key  :: Str
+) -> [net, crypto, random, sql, time] Result[List[tk.StatusUpdate], Str] {
+  let payload := str.join([
+    "{\"task_id\":\"", opts.task_id,
+    "\",\"to_agent\":\"", peer_url, "\"}"], "")
+  let __evt := trail.append(log, kinds.a2a_msg_sent(), parent, payload)
+  subscribe(peer_url, m, opts, api_key)
 }
