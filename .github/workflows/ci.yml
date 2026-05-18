@@ -29,13 +29,19 @@ jobs:
         run: lex pkg install
 
       - name: Type-check src/
+        id: lex_check
         run: |
-          set -e
+          set +e
           fail=0
+          : > /tmp/lex_errors.log
           for f in src/*.lex; do
-            if ! lex check "$f" >/dev/null 2>&1; then
-              echo "::error file=$f::lex check failed"
-              lex check "$f" 2>&1 | head -3
+            out=$(lex check "$f" 2>&1)
+            rc=$?
+            if [ $rc -ne 0 ]; then
+              echo "::error file=$f::lex check failed (rc=$rc)"
+              echo "=== FAIL ($rc): $f ===" | tee -a /tmp/lex_errors.log
+              echo "$out" | tee -a /tmp/lex_errors.log
+              echo "" >> /tmp/lex_errors.log
               fail=1
             fi
           done
@@ -49,6 +55,29 @@ jobs:
           lex test --allow-effects \
             io,time,crypto,random,sql,fs_read,fs_write,net,concurrent \
             tests/
+
+      # Surface the full lex output on PR review — the host
+      # we run from can't read the Actions log archive, and
+      # `head -3` truncates the diagnostic to uselessness.
+      - name: Comment lex errors on PR
+        if: failure() && github.event_name == 'pull_request' && hashFiles('/tmp/lex_errors.log') != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ ! -s /tmp/lex_errors.log ]; then
+            echo "No errors captured; the failure was elsewhere."
+            exit 0
+          fi
+          body=$(printf '```\n%s\n```' "$(cat /tmp/lex_errors.log)")
+          json=$(python3 -c 'import json,sys; print(json.dumps({"body": sys.argv[1]}))' "$body")
+          curl -sS -X POST \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" \
+            -d "$json" > /tmp/comment_resp.json
+          jq -r '.html_url // .message // "?"' /tmp/comment_resp.json
 
   # ----------------------------------------------------------------
   # Interop — validate lex-agent's wire format against the Google
