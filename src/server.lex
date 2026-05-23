@@ -121,7 +121,7 @@ fn emit_trail(
     None    => (),
     Some(l) => {
       let __evt := trail.append(l, kind, parent, payload)
-      (),
+      ()
     },
   }
 }
