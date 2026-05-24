@@ -98,7 +98,7 @@ $ curl -X POST http://localhost:4040/ \
 | `src/client.lex`     | `send_task(peer_url, msg, opts)` + `fetch_agent_card(peer_url)` + `subscribe(...)` over SSE |
 | `src/stream.lex`     | SSE encoder (`data: <json>\n\n`) + decoder over `Iter[Str]` |
 | `src/mount.lex`      | `mount(router, agent_def)` — register the two A2A routes onto a `lex-web/router.Router` |
-| `src/store.lex`      | `std.conc`-actor task store backing `tasks/get` + `tasks/cancel` — opt in via `srv.with_store` |
+| `src/store.lex`      | Task store backing `tasks/get` + `tasks/cancel` — `std.conc`-actor (in-memory) **or** `std.sql` SQLite (durable, survives restarts) behind one `Store` ADT. Opt in via `srv.with_store` |
 
 Every `src/*` module is pure Lex. The server's `dispatch_request`
 declares the wide row `[io, time, crypto, random, sql, fs_read,
@@ -113,17 +113,33 @@ honest.
 | JSON-RPC method | Status |
 |---|---|
 | `tasks/send`           | Full |
-| `tasks/get`            | Full when a store is attached via `srv.with_store(agent, store.spawn_store())`; returns `-32001 task-not-found` otherwise (the v0.1 stub behaviour, preserved for callers that don't opt in) |
+| `tasks/get`            | Full when a store is attached via `srv.with_store(agent, ...)`; returns `-32001 task-not-found` otherwise (the v0.1 stub behaviour, preserved for callers that don't opt in) |
 | `tasks/cancel`         | Full with a store: transitions a non-terminal task to `canceled` via `tk.advance`; without a store, returns `-32002 not-cancelable` |
 | `tasks/sendSubscribe`  | Single-frame fallback today; live SSE write-half follows `lex-lang#487` upstream |
 
-The task store is in-memory (an actor's state Map), not durable
-across process restarts — that's a follow-up. Every successful
-`tasks/send` writes the final Task into the store; `tasks/get`
-returns the latest snapshot; `tasks/cancel` flips a non-terminal
-task to `canceled` (already-terminal tasks surface as
-`not-cancelable`). See `examples/05_persistent_store.lex` for the
-end-to-end wiring.
+The task store comes in two interchangeable backends behind one
+`Store` ADT:
+
+- **In-memory** (`store.spawn_store()`) — an actor's state Map.
+  Survives across requests within a process; lost at process exit.
+- **SQLite** (`store.open_store(SqliteStore(path))`) — a `std.sql`
+  database whose `a2a_tasks` table **survives process restarts**, so
+  `tasks/get` resolves tasks submitted in earlier sessions.
+
+```lex
+let store := match store.open_store(SqliteStore("/var/lib/agent.db")) {
+  Ok(s)  => s,
+  Err(e) => ...,   # SqlError message
+}
+let agent := srv.with_store(srv.make_agent_def(card, skills), store)
+```
+
+Every successful `tasks/send` writes the final Task into the store;
+`tasks/get` returns the latest snapshot; `tasks/cancel` flips a
+non-terminal task to `canceled` (already-terminal tasks surface as
+`not-cancelable`). See `examples/05_persistent_store.lex` (in-memory)
+and `examples/06_sqlite_store.lex` (durable, survives a simulated
+restart) for the end-to-end wiring.
 
 ## Capability preconditions
 
@@ -150,14 +166,15 @@ the sender's gate.
   to a single-frame response when the upstream `std.net` streaming
   write surface isn't available; one-frame interop with Python A2A
   clients works.
-- **Durable task store.** `src/store.lex` is in-memory; a
-  `std.sql`-backed variant that survives restarts is a follow-up.
 - **Agent registry.** Platform-layer; out of scope for the
   protocol-layer package.
 
 These mirror the "out of scope" list in issue #481. **Persistent
-task store** moved out of this list — `src/store.lex` + `with_store`
-landed it (see `examples/05_persistent_store.lex`).
+task store** and **durable (SQLite) task store** both moved out of
+this list — `src/store.lex`'s `Store` ADT carries an in-memory
+(`spawn_store`) and a SQLite (`open_store(SqliteStore(path))`) backend
+(see `examples/05_persistent_store.lex` and
+`examples/06_sqlite_store.lex`).
 
 ## Tests
 
@@ -214,6 +231,12 @@ lex run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurren
 # `tasks/cancel` now resolve against the live task table.
 lex run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent \
     examples/05_persistent_store.lex demo
+
+# Durable SQLite store — a task sent to one agent is resolved by a
+# second agent (fresh store handle, same db file) after a simulated
+# process restart.
+lex run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent \
+    examples/06_sqlite_store.lex demo
 ```
 
 ## Transport

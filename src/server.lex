@@ -31,39 +31,35 @@
 # actor; a process runner adapter).
 
 import "std.list" as list
-
-import "std.str" as str
-
+import "std.str"  as str
 import "std.conc" as conc
 
 import "lex-schema/json_value" as jv
 
 import "lex-spec/capability" as cap
+import "lex-spec/spec"       as sp
 
-import "lex-spec/spec" as sp
-
-import "lex-trail/log" as trail
-
+import "lex-trail/log"   as trail
 import "lex-trail/kinds" as kinds
 
-import "./protocol" as proto
-
+import "./protocol"   as proto
 import "./agent_card" as card
-
-import "./task" as tk
-
-import "./message" as msg
-
-import "./stream" as ssem
-
-import "./store" as store
+import "./task"       as tk
+import "./message"    as msg
+import "./stream"     as ssem
+import "./store"      as store
 
 # ---- Handler signature -------------------------------------------
 #
 # A skill handler is supplied by the agent author. It takes the
 # (already-validated) input message and returns the next task state
 # plus optional output message / artifacts.
-type HandlerOutcome = { next_state :: tk.TaskState, reply :: Option[msg.Message], artifacts :: List[msg.Artifact] }
+
+type HandlerOutcome = {
+  next_state :: tk.TaskState,
+  reply :: Option[msg.Message],
+  artifacts :: List[msg.Artifact],
+}
 
 # Pair a capability declaration with its concrete handler. The
 # `Capability` value supplies the schema (for validation), the
@@ -73,7 +69,10 @@ type HandlerOutcome = { next_state :: tk.TaskState, reply :: Option[msg.Message]
 # via subset, and the choice of row is what lets `src/mount.lex`
 # register a single `POST /` route that calls back into
 # `dispatch_request` without an effect-row impedance.
-type Skill = { capability :: cap.Capability, handle :: (msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] HandlerOutcome }
+type Skill = {
+  capability :: cap.Capability,
+  handle :: (msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] HandlerOutcome,
+}
 
 # ---- AgentDef ----------------------------------------------------
 #
@@ -85,16 +84,24 @@ type Skill = { capability :: cap.Capability, handle :: (msg.Message) -> [io, tim
 # `trail` is an optional lex-trail Log; when present, every A2A
 # protocol method emits an `a2a.*` event for end-to-end auditability.
 # Attach via `with_trail(agent, log)`.
-type AgentDef = { card :: card.AgentCard, skills :: List[Skill], store :: Option[Actor[Map[Str, tk.Task]]], trail :: Option[trail.Log] }
+
+type AgentDef = {
+  card :: card.AgentCard,
+  skills :: List[Skill],
+  store :: Option[store.Store],
+  trail :: Option[trail.Log],
+}
 
 fn make_agent_def(c :: card.AgentCard, skills :: List[Skill]) -> AgentDef {
   { card: c, skills: skills, store: None, trail: None }
 }
 
-# Attach a task store. Callers spawn the actor via
-# `store.spawn_store()` once at boot and pipe the address in here.
-fn with_store(agent :: AgentDef, addr :: Actor[Map[Str, tk.Task]]) -> AgentDef {
-  { card: agent.card, skills: agent.skills, store: Some(addr), trail: agent.trail }
+# Attach a task store. Callers open a backend once at boot — either
+# `store.spawn_store()` (in-memory) or `store.open_store(cfg)`
+# (config-driven; `SqliteStore(path)` for a durable, restart-surviving
+# store) — and pipe the resulting `Store` in here.
+fn with_store(agent :: AgentDef, s :: store.Store) -> AgentDef {
+  { card: agent.card, skills: agent.skills, store: Some(s), trail: agent.trail }
 }
 
 # Attach a trail log. Every A2A protocol method will emit an
@@ -105,9 +112,15 @@ fn with_trail(agent :: AgentDef, log :: trail.Log) -> AgentDef {
 }
 
 # ---- Trail helpers -----------------------------------------------
-fn emit_trail(log :: Option[trail.Log], kind :: Str, parent :: Option[Str], payload :: Str) -> [sql, time] Unit {
+
+fn emit_trail(
+  log     :: Option[trail.Log],
+  kind    :: Str,
+  parent  :: Option[Str],
+  payload :: Str
+) -> [sql, time] Unit {
   match log {
-    None => (),
+    None    => (),
     Some(l) => {
       let __evt := trail.append(l, kind, parent, payload)
       ()
@@ -115,11 +128,17 @@ fn emit_trail(log :: Option[trail.Log], kind :: Str, parent :: Option[Str], payl
   }
 }
 
-fn emit_msg_sent_if_reply(log :: Option[trail.Log], task_id :: Str, reply :: Option[msg.Message]) -> [sql, time] Unit {
+fn emit_msg_sent_if_reply(
+  log     :: Option[trail.Log],
+  task_id :: Str,
+  reply   :: Option[msg.Message]
+) -> [sql, time] Unit {
   match reply {
-    None => (),
+    None    => (),
     Some(m) => {
-      let payload := str.join(["{\"task_id\":\"", task_id, "\",\"message_id\":\"", m.message_id, "\"}"], "")
+      let payload := str.join([
+        "{\"task_id\":\"", task_id,
+        "\",\"message_id\":\"", m.message_id, "\"}"], "")
       emit_trail(log, kinds.a2a_msg_sent(), None, payload)
     },
   }
@@ -130,31 +149,34 @@ fn emit_msg_sent_if_reply(log :: Option[trail.Log], task_id :: Str, reply :: Opt
 # `dispatch_request(agent, body)` is the single entry point: takes a
 # raw HTTP body, returns a JSON-RPC response string. Pure-ish: the
 # only effects come from the handler closures.
-fn dispatch_request(agent :: AgentDef, body :: Str) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] Str {
+
+fn dispatch_request(
+  agent :: AgentDef,
+  body :: Str
+) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] Str {
   match proto.parse_request(body) {
     Err(rpcerr) => proto.response_to_str(ResErr(IdNull, rpcerr)),
-    Ok(req) => proto.response_to_str(handle_method(agent, req)),
+    Ok(req)     => proto.response_to_str(handle_method(agent, req)),
   }
 }
 
 fn handle_method(agent :: AgentDef, req :: proto.Request) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] proto.Response {
   if req.method == proto.method_tasks_send() {
     handle_tasks_send(agent, req)
+  } else { if req.method == proto.method_tasks_get() {
+    handle_tasks_get(agent, req)
+  } else { if req.method == proto.method_tasks_cancel() {
+    handle_tasks_cancel(agent, req)
+  } else { if req.method == proto.method_tasks_send_subscribe() {
+    # Fallback for callers using `dispatch_request` directly. mount.lex
+    # detects the SSE method early and routes to `dispatch_subscribe_str`
+    # instead, which returns properly framed SSE. This path still returns
+    # a JSON-RPC response for backward-compatible non-SSE consumers.
+    handle_tasks_send(agent, req)
   } else {
-    if req.method == proto.method_tasks_get() {
-      handle_tasks_get(agent, req)
-    } else {
-      if req.method == proto.method_tasks_cancel() {
-        handle_tasks_cancel(agent, req)
-      } else {
-        if req.method == proto.method_tasks_send_subscribe() {
-          handle_tasks_send(agent, req)
-        } else {
-          proto.fail(req.id, proto.err_method_not_found(), str.concat("method not supported: ", req.method))
-        }
-      }
-    }
-  }
+    proto.fail(req.id, proto.err_method_not_found(),
+      str.concat("method not supported: ", req.method))
+  }}}}
 }
 
 # ---- tasks/send --------------------------------------------------
@@ -174,7 +196,11 @@ fn handle_method(agent :: AgentDef, req :: proto.Request) -> [io, time, crypto, 
 # A2A reference servers route to skills via prior `tasks/get` of the
 # AgentCard skill list; we accept an explicit `skill` field for
 # directness. If omitted, we attempt single-skill dispatch.
-fn handle_tasks_send(agent :: AgentDef, req :: proto.Request) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] proto.Response {
+
+fn handle_tasks_send(
+  agent :: AgentDef,
+  req :: proto.Request
+) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] proto.Response {
   let params := req.params
   match required_str(params, "id") {
     Err(e) => proto.fail(req.id, proto.err_invalid_params(), e),
@@ -183,9 +209,12 @@ fn handle_tasks_send(agent :: AgentDef, req :: proto.Request) -> [io, time, cryp
       Ok(ctx_id) => match required_obj(params, "message") {
         Err(e) => proto.fail(req.id, proto.err_invalid_params(), e),
         Ok(mj) => match msg.parse_message(mj) {
-          Err(e) => proto.fail(req.id, proto.err_invalid_params(), str.concat("invalid message: ", e)),
+          Err(e) => proto.fail(req.id, proto.err_invalid_params(),
+            str.concat("invalid message: ", e)),
           Ok(m) => {
-            let recv_payload := str.join(["{\"task_id\":\"", task_id, "\",\"context_id\":\"", ctx_id, "\"}"], "")
+            let recv_payload := str.join([
+              "{\"task_id\":\"", task_id,
+              "\",\"context_id\":\"", ctx_id, "\"}"], "")
             let __recv := emit_trail(agent.trail, kinds.a2a_task_received(), None, recv_payload)
             let skill_name := optional_str(params, "skill")
             dispatch_skill(agent, req.id, task_id, ctx_id, m, skill_name)
@@ -202,59 +231,91 @@ fn required_context_id(params :: jv.Json) -> Result[Str, Str] {
   match jv.get_field(params, "contextId") {
     Some(v) => match jv.as_str(v) {
       Some(s) => Ok(s),
-      None => Err("contextId must be string"),
+      None    => Err("contextId must be string"),
     },
     None => match jv.get_field(params, "sessionId") {
       Some(v) => match jv.as_str(v) {
         Some(s) => Ok(s),
-        None => Err("sessionId must be string"),
+        None    => Err("sessionId must be string"),
       },
       None => Err("missing param: contextId (or legacy sessionId)"),
     },
   }
 }
 
-fn dispatch_skill(agent :: AgentDef, rpc_id :: proto.RpcId, task_id :: Str, ctx_id :: Str, m :: msg.Message, skill_name :: Str) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] proto.Response {
+fn dispatch_skill(
+  agent :: AgentDef,
+  rpc_id :: proto.RpcId,
+  task_id :: Str,
+  ctx_id :: Str,
+  m :: msg.Message,
+  skill_name :: Str
+) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] proto.Response {
   let resolved := if str.is_empty(skill_name) {
     match list.head(agent.skills) {
       Some(s) => Some(s),
-      None => None,
+      None    => None,
     }
-  } else {
-    find_skill(agent.skills, skill_name)
-  }
+  } else { find_skill(agent.skills, skill_name) }
   match resolved {
-    None => proto.fail(rpc_id, proto.err_unsupported_op(), str.concat("unknown skill: ", skill_name)),
+    None => proto.fail(rpc_id, proto.err_unsupported_op(),
+      str.concat("unknown skill: ", skill_name)),
     Some(skill) => run_skill(skill, agent.store, agent.trail, rpc_id, task_id, ctx_id, m),
   }
 }
 
-fn run_skill(skill :: Skill, store_ref :: Option[Actor[Map[Str, tk.Task]]], trail_log :: Option[trail.Log], rpc_id :: proto.RpcId, task_id :: Str, ctx_id :: Str, m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] proto.Response {
-  let bindings := [("args", bindings_from_message(m))]
+fn run_skill(
+  skill :: Skill,
+  store_ref :: Option[store.Store],
+  trail_log :: Option[trail.Log],
+  rpc_id :: proto.RpcId,
+  task_id :: Str,
+  ctx_id :: Str,
+  m :: msg.Message
+) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] proto.Response {
+  # Build the bindings the precondition expects. v0.1 exposes a
+  # single `args` binding wrapping the inbound message as a Json
+  # `VRecord("Message", ...)`. Real agents will add session state.
+  let bindings := [
+    ("args", bindings_from_message(m)),
+  ]
   match cap.gate(skill.capability, bindings) {
-    Deny(reason) => proto.fail(rpc_id, proto.err_spec_denied(), str.concat("spec-denied: ", reason)),
-    Inconclusive(reason) => proto.fail(rpc_id, proto.err_spec_denied(), str.concat("spec-inconclusive: ", reason)),
+    Deny(reason) => proto.fail(rpc_id, proto.err_spec_denied(),
+      str.concat("spec-denied: ", reason)),
+    Inconclusive(reason) => proto.fail(rpc_id, proto.err_spec_denied(),
+      str.concat("spec-inconclusive: ", reason)),
     Allow => {
       let initial := tk.submitted(task_id, ctx_id, m)
       let advanced := match tk.advance(initial, TSWorking, None) {
-        Ok(t) => t,
+        Ok(t)  => t,
         Err(_) => initial,
       }
-      let __e1 := emit_trail(trail_log, kinds.a2a_task_state_change(), None, str.join(["{\"task_id\":\"", task_id, "\",\"from_state\":\"submitted\",\"to_state\":\"working\"}"], ""))
+      let __e1 := emit_trail(trail_log, kinds.a2a_task_state_change(), None,
+        str.join(["{\"task_id\":\"", task_id,
+          "\",\"from_state\":\"submitted\",\"to_state\":\"working\"}"], ""))
       let outcome := skill.handle(m)
+      # Stamp a server-generated `messageId` on any reply the handler
+      # left blank — A2A requires a non-empty id on every Message.
       let stamped_reply := stamp_reply_id(outcome.reply)
       let with_reply := match tk.advance(advanced, outcome.next_state, stamped_reply) {
-        Ok(t) => t,
+        Ok(t)  => t,
         Err(_) => advanced,
       }
-      let final_task := list.fold(outcome.artifacts, with_reply, fn (acc :: tk.Task, a :: msg.Artifact) -> tk.Task {
-        match tk.add_artifact(acc, a) {
-          Ok(t) => t,
-          Err(_) => acc,
-        }
-      })
-      let __e2 := emit_trail(trail_log, kinds.a2a_task_state_change(), None, str.join(["{\"task_id\":\"", task_id, "\",\"from_state\":\"working\",\"to_state\":\"", tk.state_label(final_task.state), "\"}"], ""))
+      let final_task := list.fold(outcome.artifacts, with_reply,
+        fn (acc :: tk.Task, a :: msg.Artifact) -> tk.Task {
+          match tk.add_artifact(acc, a) {
+            Ok(t)  => t,
+            Err(_) => acc,
+          }
+        })
+      let __e2 := emit_trail(trail_log, kinds.a2a_task_state_change(), None,
+        str.join(["{\"task_id\":\"", task_id,
+          "\",\"from_state\":\"working\",\"to_state\":\"",
+          tk.state_label(final_task.state), "\"}"], ""))
       let __e3 := emit_msg_sent_if_reply(trail_log, task_id, stamped_reply)
+      # If a store is attached, persist the final task — every
+      # successful dispatch ends with the latest snapshot available
+      # to `tasks/get` and `tasks/cancel`.
       let __discard := persist(store_ref, final_task)
       proto.ok(rpc_id, tk.task_to_json(final_task))
     },
@@ -262,11 +323,11 @@ fn run_skill(skill :: Skill, store_ref :: Option[Actor[Map[Str, tk.Task]]], trai
 }
 
 # Fire-and-forget write into the optional store. Pulled out as its
-# own fn so the [concurrent] effect stays localised and the call
+# own fn so the [sql, concurrent] effect stays localised and the call
 # site stays readable.
-fn persist(s :: Option[Actor[Map[Str, tk.Task]]], t :: tk.Task) -> [concurrent] Unit {
+fn persist(s :: Option[store.Store], t :: tk.Task) -> [sql, concurrent] Unit {
   match s {
-    None => (),
+    None       => (),
     Some(addr) => store.put(addr, t),
   }
 }
@@ -276,7 +337,7 @@ fn persist(s :: Option[Actor[Map[Str, tk.Task]]], t :: tk.Task) -> [concurrent] 
 # handler supplied an explicit id.
 fn stamp_reply_id(r :: Option[msg.Message]) -> [crypto, random] Option[msg.Message] {
   match r {
-    None => None,
+    None    => None,
     Some(m) => Some(stamp_message(m)),
   }
 }
@@ -295,19 +356,20 @@ fn stamp_message(m :: msg.Message) -> [crypto, random] msg.Message {
 # this as call sites need richer fields.
 fn bindings_from_message(m :: msg.Message) -> sp.SpecValue {
   let first := first_text_part(m.parts)
-  VRecord({ name: "Args", fields: [("role", VStr(msg.role_label(m.role))), ("text", VStr(first))] })
+  VRecord({
+    name: "Args",
+    fields: [
+      ("role", VStr(msg.role_label(m.role))),
+      ("text", VStr(first)),
+    ],
+  })
 }
 
 fn first_text_part(parts :: List[msg.Part]) -> Str {
   list.fold(parts, "", fn (acc :: Str, p :: msg.Part) -> Str {
     if str.is_empty(acc) {
-      match p {
-        TextPart(s) => s,
-        _ => acc,
-      }
-    } else {
-      acc
-    }
+      match p { TextPart(s) => s, _ => acc }
+    } else { acc }
   })
 }
 
@@ -317,13 +379,19 @@ fn first_text_part(parts :: List[msg.Part]) -> Str {
 # and returns it as the JSON-RPC result. Without a store, replies
 # `-32001 task-not-found` — same shape as the v0.1 stub so callers
 # that didn't opt in see no behaviour change.
-fn handle_tasks_get(agent :: AgentDef, req :: proto.Request) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] proto.Response {
+
+fn handle_tasks_get(
+  agent :: AgentDef,
+  req :: proto.Request
+) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] proto.Response {
   match required_str(req.params, "id") {
     Err(e) => proto.fail(req.id, proto.err_invalid_params(), e),
     Ok(id) => match agent.store {
-      None => proto.fail(req.id, proto.err_task_not_found(), str.concat("task not found: ", id)),
+      None       => proto.fail(req.id, proto.err_task_not_found(),
+        str.concat("task not found: ", id)),
       Some(addr) => match store.get(addr, id) {
-        None => proto.fail(req.id, proto.err_task_not_found(), str.concat("task not found: ", id)),
+        None    => proto.fail(req.id, proto.err_task_not_found(),
+          str.concat("task not found: ", id)),
         Some(t) => proto.ok(req.id, tk.task_to_json(t)),
       },
     },
@@ -336,21 +404,29 @@ fn handle_tasks_get(agent :: AgentDef, req :: proto.Request) -> [io, time, crypt
 # transition via `tk.advance(t, TSCanceled, None)` — already-terminal
 # tasks (completed / failed / canceled) surface as `-32002
 # not-cancelable`. Missing-id surfaces as `task-not-found`.
-fn handle_tasks_cancel(agent :: AgentDef, req :: proto.Request) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] proto.Response {
+
+fn handle_tasks_cancel(
+  agent :: AgentDef,
+  req :: proto.Request
+) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] proto.Response {
   match required_str(req.params, "id") {
     Err(e) => proto.fail(req.id, proto.err_invalid_params(), e),
     Ok(id) => match agent.store {
-      None => proto.fail(req.id, proto.err_not_cancelable(), str.concat("no cancel-tracking actor for: ", id)),
+      None       => proto.fail(req.id, proto.err_not_cancelable(),
+        str.concat("no cancel-tracking actor for: ", id)),
       Some(addr) => match store.cancel(addr, id) {
         Err(reason) => {
           if str.contains(reason, "not found") {
-            proto.fail(req.id, proto.err_task_not_found(), str.concat("task not found: ", id))
+            proto.fail(req.id, proto.err_task_not_found(),
+              str.concat("task not found: ", id))
           } else {
-            proto.fail(req.id, proto.err_not_cancelable(), str.concat("not cancelable: ", reason))
+            proto.fail(req.id, proto.err_not_cancelable(),
+              str.concat("not cancelable: ", reason))
           }
         },
         Ok(t) => {
-          let __ec := emit_trail(agent.trail, kinds.a2a_task_state_change(), None, str.join(["{\"task_id\":\"", id, "\",\"to_state\":\"canceled\"}"], ""))
+          let __ec := emit_trail(agent.trail, kinds.a2a_task_state_change(), None,
+            str.join(["{\"task_id\":\"", id, "\",\"to_state\":\"canceled\"}"], ""))
           proto.ok(req.id, tk.task_to_json(t))
         },
       },
@@ -359,22 +435,23 @@ fn handle_tasks_cancel(agent :: AgentDef, req :: proto.Request) -> [io, time, cr
 }
 
 # ---- Helpers ------------------------------------------------------
+
 fn required_str(j :: jv.Json, field :: Str) -> Result[Str, Str] {
   match jv.get_field(j, field) {
     None => Err(str.concat("missing param: ", field)),
     Some(v) => match jv.as_str(v) {
       Some(s) => Ok(s),
-      None => Err(str.concat("param must be string: ", field)),
+      None    => Err(str.concat("param must be string: ", field)),
     },
   }
 }
 
 fn required_obj(j :: jv.Json, field :: Str) -> Result[jv.Json, Str] {
   match jv.get_field(j, field) {
-    None => Err(str.concat("missing param: ", field)),
+    None    => Err(str.concat("missing param: ", field)),
     Some(v) => match jv.as_obj(v) {
       Some(_) => Ok(v),
-      None => Err(str.concat("param must be object: ", field)),
+      None    => Err(str.concat("param must be object: ", field)),
     },
   }
 }
@@ -382,10 +459,7 @@ fn required_obj(j :: jv.Json, field :: Str) -> Result[jv.Json, Str] {
 fn optional_str(j :: jv.Json, field :: Str) -> Str {
   match jv.get_field(j, field) {
     None => "",
-    Some(v) => match jv.as_str(v) {
-      Some(s) => s,
-      None => "",
-    },
+    Some(v) => match jv.as_str(v) { Some(s) => s, None => "" },
   }
 }
 
@@ -393,11 +467,7 @@ fn find_skill(skills :: List[Skill], name :: Str) -> Option[Skill] {
   list.fold(skills, None, fn (acc :: Option[Skill], s :: Skill) -> Option[Skill] {
     match acc {
       Some(_) => acc,
-      None => if s.capability.name == name {
-        Some(s)
-      } else {
-        None
-      },
+      None    => if s.capability.name == name { Some(s) } else { None },
     }
   })
 }
@@ -406,6 +476,7 @@ fn find_skill(skills :: List[Skill], name :: Str) -> Option[Skill] {
 #
 # `agent_card_response` is what the `/.well-known/agent.json` GET
 # returns. Pure string builder — no effects.
+
 fn agent_card_response(agent :: AgentDef) -> Str {
   card.card_to_pretty(agent.card)
 }
@@ -424,24 +495,33 @@ fn agent_card_response(agent :: AgentDef) -> Str {
 # For callers using `std.net.serve_fn` directly, call
 # `dispatch_sse_frames` and wrap the result with
 # `BodyStream(iter.from_list(frames))` for true chunked streaming.
+
 fn is_subscribe_body(body :: Str) -> Bool {
   str.contains(body, "\"tasks/sendSubscribe\"")
 }
 
-fn dispatch_subscribe_str(agent :: AgentDef, body :: Str) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] Str {
-  list.fold(dispatch_sse_frames(agent, body), "", fn (acc :: Str, frame :: Str) -> Str {
-    str.concat(acc, frame)
-  })
+fn dispatch_subscribe_str(
+  agent :: AgentDef,
+  body :: Str
+) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] Str {
+  list.fold(dispatch_sse_frames(agent, body), "",
+    fn (acc :: Str, frame :: Str) -> Str { str.concat(acc, frame) })
 }
 
-fn dispatch_sse_frames(agent :: AgentDef, body :: Str) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] List[Str] {
+fn dispatch_sse_frames(
+  agent :: AgentDef,
+  body :: Str
+) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] List[Str] {
   match proto.parse_request(body) {
     Err(rpcerr) => [ssem.encode_data(proto.response_to_json(ResErr(IdNull, rpcerr)))],
-    Ok(req) => build_subscribe_frames(agent, req),
+    Ok(req)     => build_subscribe_frames(agent, req),
   }
 }
 
-fn build_subscribe_frames(agent :: AgentDef, req :: proto.Request) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] List[Str] {
+fn build_subscribe_frames(
+  agent :: AgentDef,
+  req :: proto.Request
+) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] List[Str] {
   let params := req.params
   match required_str(params, "id") {
     Err(e) => [sse_error_frame(req.id, proto.err_invalid_params(), e)],
@@ -450,9 +530,12 @@ fn build_subscribe_frames(agent :: AgentDef, req :: proto.Request) -> [io, time,
       Ok(ctx_id) => match required_obj(params, "message") {
         Err(e) => [sse_error_frame(req.id, proto.err_invalid_params(), e)],
         Ok(mj) => match msg.parse_message(mj) {
-          Err(e) => [sse_error_frame(req.id, proto.err_invalid_params(), str.concat("invalid message: ", e))],
+          Err(e) => [sse_error_frame(req.id, proto.err_invalid_params(),
+            str.concat("invalid message: ", e))],
           Ok(m) => {
-            let recv_payload := str.join(["{\"task_id\":\"", task_id, "\",\"context_id\":\"", ctx_id, "\"}"], "")
+            let recv_payload := str.join([
+              "{\"task_id\":\"", task_id,
+              "\",\"context_id\":\"", ctx_id, "\"}"], "")
             let __recv := emit_trail(agent.trail, kinds.a2a_task_received(), None, recv_payload)
             let skill_name := optional_str(params, "skill")
             run_skill_subscribe(agent, req.id, task_id, ctx_id, m, skill_name)
@@ -463,22 +546,37 @@ fn build_subscribe_frames(agent :: AgentDef, req :: proto.Request) -> [io, time,
   }
 }
 
-fn run_skill_subscribe(agent :: AgentDef, rpc_id :: proto.RpcId, task_id :: Str, ctx_id :: Str, m :: msg.Message, skill_name :: Str) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] List[Str] {
+fn run_skill_subscribe(
+  agent :: AgentDef,
+  rpc_id :: proto.RpcId,
+  task_id :: Str,
+  ctx_id :: Str,
+  m :: msg.Message,
+  skill_name :: Str
+) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] List[Str] {
   let resolved := if str.is_empty(skill_name) {
     match list.head(agent.skills) {
       Some(s) => Some(s),
-      None => None,
+      None    => None,
     }
-  } else {
-    find_skill(agent.skills, skill_name)
-  }
+  } else { find_skill(agent.skills, skill_name) }
   match resolved {
-    None => [sse_error_frame(rpc_id, proto.err_unsupported_op(), str.concat("unknown skill: ", skill_name))],
-    Some(skill) => emit_skill_frames(skill, agent.store, agent.trail, rpc_id, task_id, ctx_id, m),
+    None => [sse_error_frame(rpc_id, proto.err_unsupported_op(),
+      str.concat("unknown skill: ", skill_name))],
+    Some(skill) => emit_skill_frames(skill, agent.store, agent.trail,
+      rpc_id, task_id, ctx_id, m),
   }
 }
 
-fn emit_skill_frames(skill :: Skill, store_ref :: Option[Actor[Map[Str, tk.Task]]], trail_log :: Option[trail.Log], rpc_id :: proto.RpcId, task_id :: Str, ctx_id :: Str, m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] List[Str] {
+fn emit_skill_frames(
+  skill :: Skill,
+  store_ref :: Option[store.Store],
+  trail_log :: Option[trail.Log],
+  rpc_id :: proto.RpcId,
+  task_id :: Str,
+  ctx_id :: Str,
+  m :: msg.Message
+) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] List[Str] {
   let bindings := [("args", bindings_from_message(m))]
   match cap.gate(skill.capability, bindings) {
     Deny(_) => {
@@ -500,24 +598,30 @@ fn emit_skill_frames(skill :: Skill, store_ref :: Option[Actor[Map[Str, tk.Task]
     Allow => {
       let initial := tk.submitted(task_id, ctx_id, m)
       let working := match tk.advance(initial, TSWorking, None) {
-        Ok(t) => t,
+        Ok(t)  => t,
         Err(_) => initial,
       }
-      let __e1 := emit_trail(trail_log, kinds.a2a_task_state_change(), None, str.join(["{\"task_id\":\"", task_id, "\",\"from_state\":\"submitted\",\"to_state\":\"working\"}"], ""))
+      let __e1 := emit_trail(trail_log, kinds.a2a_task_state_change(), None,
+        str.join(["{\"task_id\":\"", task_id,
+          "\",\"from_state\":\"submitted\",\"to_state\":\"working\"}"], ""))
       let working_frame := ssem.encode_status(tk.status_update(working, None))
       let outcome := skill.handle(m)
       let stamped_reply := stamp_reply_id(outcome.reply)
       let with_reply := match tk.advance(working, outcome.next_state, stamped_reply) {
-        Ok(t) => t,
+        Ok(t)  => t,
         Err(_) => working,
       }
-      let final_task := list.fold(outcome.artifacts, with_reply, fn (acc :: tk.Task, a :: msg.Artifact) -> tk.Task {
-        match tk.add_artifact(acc, a) {
-          Ok(t) => t,
-          Err(_) => acc,
-        }
-      })
-      let __e2 := emit_trail(trail_log, kinds.a2a_task_state_change(), None, str.join(["{\"task_id\":\"", task_id, "\",\"from_state\":\"working\",\"to_state\":\"", tk.state_label(final_task.state), "\"}"], ""))
+      let final_task := list.fold(outcome.artifacts, with_reply,
+        fn (acc :: tk.Task, a :: msg.Artifact) -> tk.Task {
+          match tk.add_artifact(acc, a) {
+            Ok(t)  => t,
+            Err(_) => acc,
+          }
+        })
+      let __e2 := emit_trail(trail_log, kinds.a2a_task_state_change(), None,
+        str.join(["{\"task_id\":\"", task_id,
+          "\",\"from_state\":\"working\",\"to_state\":\"",
+          tk.state_label(final_task.state), "\"}"], ""))
       let __e3 := emit_msg_sent_if_reply(trail_log, task_id, stamped_reply)
       let __discard := persist(store_ref, final_task)
       let final_frame := ssem.encode_status(tk.status_update(final_task, stamped_reply))
@@ -531,4 +635,3 @@ fn emit_skill_frames(skill :: Skill, store_ref :: Option[Actor[Map[Str, tk.Task]
 fn sse_error_frame(rpc_id :: proto.RpcId, code :: Int, message :: Str) -> Str {
   ssem.encode_data(proto.response_to_json(proto.fail(rpc_id, code, message)))
 }
-
