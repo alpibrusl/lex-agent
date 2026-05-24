@@ -74,26 +74,26 @@ fn store_handler(
 
 # ---- Spawn ------------------------------------------------------
 
-fn spawn_store() -> [concurrent] conc.Addr {
+fn spawn_store() -> [concurrent] Actor[Map[Str, tk.Task]] {
   conc.spawn(map.new(), store_handler)
 }
 
 # ---- Caller-side helpers ----------------------------------------
 
-fn put(addr :: conc.Addr, t :: tk.Task) -> [concurrent] Unit {
-  let __discard := conc.tell(addr, MsgPut(t))
+fn put(actor :: Actor[Map[Str, tk.Task]], t :: tk.Task) -> [concurrent] Unit {
+  let __discard := conc.tell(actor, MsgPut(t))
   ()
 }
 
-fn get(addr :: conc.Addr, id :: Str) -> [concurrent] Option[tk.Task] {
-  match conc.ask(addr, MsgGet(id)) {
+fn get(actor :: Actor[Map[Str, tk.Task]], id :: Str) -> [concurrent] Option[tk.Task] {
+  match conc.ask(actor, MsgGet(id)) {
     RepGet(opt) => opt,
     _           => None,
   }
 }
 
-fn cancel(addr :: conc.Addr, id :: Str) -> [concurrent] Result[tk.Task, Str] {
-  match conc.ask(addr, MsgCancel(id)) {
+fn cancel(actor :: Actor[Map[Str, tk.Task]], id :: Str) -> [concurrent] Result[tk.Task, Str] {
+  match conc.ask(actor, MsgCancel(id)) {
     RepCancel(r) => r,
     _            => Err("unexpected reply from store"),
   }

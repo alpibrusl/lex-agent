@@ -88,7 +88,7 @@ type Skill = {
 type AgentDef = {
   card :: card.AgentCard,
   skills :: List[Skill],
-  store :: Option[conc.Addr],
+  store :: Option[Actor[Map[Str, tk.Task]]],
   trail :: Option[trail.Log],
 }
 
@@ -98,7 +98,7 @@ fn make_agent_def(c :: card.AgentCard, skills :: List[Skill]) -> AgentDef {
 
 # Attach a task store. Callers spawn the actor via
 # `store.spawn_store()` once at boot and pipe the address in here.
-fn with_store(agent :: AgentDef, addr :: conc.Addr) -> AgentDef {
+fn with_store(agent :: AgentDef, addr :: Actor[Map[Str, tk.Task]]) -> AgentDef {
   { card: agent.card, skills: agent.skills, store: Some(addr), trail: agent.trail }
 }
 
@@ -264,7 +264,7 @@ fn dispatch_skill(
 
 fn run_skill(
   skill :: Skill,
-  store_ref :: Option[conc.Addr],
+  store_ref :: Option[Actor[Map[Str, tk.Task]]],
   trail_log :: Option[trail.Log],
   rpc_id :: proto.RpcId,
   task_id :: Str,
@@ -323,7 +323,7 @@ fn run_skill(
 # Fire-and-forget write into the optional store. Pulled out as its
 # own fn so the [concurrent] effect stays localised and the call
 # site stays readable.
-fn persist(s :: Option[conc.Addr], t :: tk.Task) -> [concurrent] Unit {
+fn persist(s :: Option[Actor[Map[Str, tk.Task]]], t :: tk.Task) -> [concurrent] Unit {
   match s {
     None       => (),
     Some(addr) => store.put(addr, t),
@@ -568,7 +568,7 @@ fn run_skill_subscribe(
 
 fn emit_skill_frames(
   skill :: Skill,
-  store_ref :: Option[conc.Addr],
+  store_ref :: Option[Actor[Map[Str, tk.Task]]],
   trail_log :: Option[trail.Log],
   rpc_id :: proto.RpcId,
   task_id :: Str,
