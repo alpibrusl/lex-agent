@@ -26,10 +26,13 @@
 
 import "std.map" as map
 
-import "lex-web/ctx"      as ctx
+import "lex-web/ctx" as ctx
+
 import "lex-web/response" as resp
-import "lex-web/router"   as router
-import "lex-web/body"     as wbody
+
+import "lex-web/router" as router
+
+import "lex-web/body" as wbody
 
 import "./server" as srv
 
@@ -52,15 +55,7 @@ fn rpc_route(agent :: srv.AgentDef) -> (ctx.Ctx) -> [io, time, crypto, random, s
     let body_str := wbody.raw_body(c)
     if srv.is_subscribe_body(body_str) {
       let sse_body := srv.dispatch_subscribe_str(agent, body_str)
-      {
-        status:  200,
-        body:    sse_body,
-        headers: map.from_list([
-          ("content-type",  "text/event-stream"),
-          ("cache-control", "no-cache"),
-          ("connection",    "keep-alive"),
-        ]),
-      }
+      { status: 200, body: sse_body, headers: map.from_list([("content-type", "text/event-stream"), ("cache-control", "no-cache"), ("connection", "keep-alive")]) }
     } else {
       let response := srv.dispatch_request(agent, body_str)
       resp.json(response)
@@ -72,7 +67,7 @@ fn rpc_route(agent :: srv.AgentDef) -> (ctx.Ctx) -> [io, time, crypto, random, s
 # the augmented router — chainable with further `router.route` /
 # `router.use_mw` calls.
 fn mount(r :: router.Router, agent :: srv.AgentDef) -> router.Router {
-  let with_card := router.route(r, "GET", "/.well-known/agent.json",
-    card_route(agent))
+  let with_card := router.route(r, "GET", "/.well-known/agent.json", card_route(agent))
   router.route_effectful(with_card, "POST", "/", rpc_route(agent))
 }
+

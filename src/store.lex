@@ -29,7 +29,8 @@
 #   - `put` / `get` / `cancel` declare `[concurrent]`.
 #   - The handler itself is pure — it's a fold over the Map.
 
-import "std.map"  as map
+import "std.map" as map
+
 import "std.conc" as conc
 
 import "./task" as tk
@@ -39,26 +40,11 @@ import "./task" as tk
 # `StoreMsg` is what gets sent to the actor. `StoreReply` is the
 # response shape `conc.ask` returns. The reply discriminator mirrors
 # the request so callers can `match` on it confidently.
+type StoreMsg = MsgPut(tk.Task) | MsgGet(Str) | MsgCancel(Str)
 
-type StoreMsg =
-    MsgPut(tk.Task)
-  | MsgGet(Str)
-  | MsgCancel(Str)
+type StoreReply = RepPut | RepGet(Option[tk.Task]) | RepCancel(Result[tk.Task, Str])
 
-type StoreReply =
-    RepPut
-  | RepGet(Option[tk.Task])
-  | RepCancel(Result[tk.Task, Str])
-
-# ---- Handler -----------------------------------------------------
-#
-# Pure fold: `(state, msg) -> (state', reply)`. The actor framework
-# calls this on every inbound message; state threads through.
-
-fn store_handler(
-  state :: Map[Str, tk.Task],
-  msg :: StoreMsg
-) -> (Map[Str, tk.Task], StoreReply) {
+fn store_handler(state :: Map[Str, tk.Task], msg :: StoreMsg) -> (Map[Str, tk.Task], StoreReply) {
   match msg {
     MsgPut(t) => (map.set(state, t.id, t), RepPut),
     MsgGet(id) => (state, RepGet(map.get(state, id))),
@@ -73,13 +59,11 @@ fn store_handler(
 }
 
 # ---- Spawn ------------------------------------------------------
-
 fn spawn_store() -> [concurrent] Actor[Map[Str, tk.Task]] {
   conc.spawn(map.new(), store_handler)
 }
 
 # ---- Caller-side helpers ----------------------------------------
-
 fn put(actor :: Actor[Map[Str, tk.Task]], t :: tk.Task) -> [concurrent] Unit {
   let __discard := conc.tell(actor, MsgPut(t))
   ()
@@ -88,13 +72,14 @@ fn put(actor :: Actor[Map[Str, tk.Task]], t :: tk.Task) -> [concurrent] Unit {
 fn get(actor :: Actor[Map[Str, tk.Task]], id :: Str) -> [concurrent] Option[tk.Task] {
   match conc.ask(actor, MsgGet(id)) {
     RepGet(opt) => opt,
-    _           => None,
+    _ => None,
   }
 }
 
 fn cancel(actor :: Actor[Map[Str, tk.Task]], id :: Str) -> [concurrent] Result[tk.Task, Str] {
   match conc.ask(actor, MsgCancel(id)) {
     RepCancel(r) => r,
-    _            => Err("unexpected reply from store"),
+    _ => Err("unexpected reply from store"),
   }
 }
+
