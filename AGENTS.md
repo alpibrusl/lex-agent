@@ -129,15 +129,35 @@ artifacts can't be added to a terminal task.
 
 ## Task store
 
-`src/store.lex` is a `std.conc` actor wrapping `Map[Str, tk.Task]`.
-The server writes the final Task after every successful dispatch
-and reads back on `tasks/get` / `tasks/cancel`. Wire it in once at
-boot:
+`src/store.lex` exposes a `Store` ADT with two interchangeable
+backends; the server writes the final Task after every successful
+dispatch and reads back on `tasks/get` / `tasks/cancel`, agnostic to
+which backend is attached:
+
+- **`InMemory`** — a `std.conc` actor wrapping `Map[Str, tk.Task]`.
+  Survives across requests within a process; lost at process exit.
+- **`Sqlite`** — a `std.sql` `Db` whose `a2a_tasks` table survives
+  process restarts. The full Task is persisted as its canonical wire
+  JSON (`tk.task_to_json` → `tk.task_from_json` on read); `id`,
+  `context_id`, and `state` are lifted into columns for queryability.
+
+Select a backend declaratively with `StoreConfig`
+(`InMemoryStore | SqliteStore(Str)`) and resolve it with
+`open_store`; or use the zero-config `spawn_store()` for in-memory.
+Wire it in once at boot:
 
 ```lex
+# In-memory (unchanged):
 let agent := srv.with_store(
   srv.make_agent_def(my_card, my_skills),
   store.spawn_store())
+
+# Durable (SQLite):
+let s := match store.open_store(SqliteStore("/var/lib/agent.db")) {
+  Ok(st) => st,
+  Err(e) => ...,   # SqlError message
+}
+let agent := srv.with_store(srv.make_agent_def(my_card, my_skills), s)
 ```
 
 Rules:
@@ -153,14 +173,17 @@ Rules:
   `-32002 not-cancelable`. Don't shortcut by re-writing the task
   record with a different `state` — the lifecycle is exhaustive
   for a reason.
-- **In-memory only.** The store's state is the actor's, lost at
-  process exit. A durable variant (sqlite-backed) is a follow-up.
-- **One store per agent.** The `AgentDef.store :: Option[conc.Addr]`
-  holds one address. Sharing a store across two agents is
-  technically possible (just pass the same addr to both
-  `with_store` calls) but the task-id namespace would need to be
-  globally unique across both — A2A doesn't say anything about
-  that, so it's a "your problem" pattern.
+- **Durability is a backend choice.** `InMemory` state is the
+  actor's, lost at process exit; `Sqlite` persists to disk and
+  survives restarts. The server code is identical for both — only
+  the `Store` value handed to `with_store` differs.
+- **One store per agent.** The `AgentDef.store :: Option[store.Store]`
+  holds one backend. Sharing a store across two agents is
+  technically possible (pass the same `Store` to both `with_store`
+  calls; two agents pointed at the same SQLite path share the table)
+  but the task-id namespace would need to be globally unique across
+  both — A2A doesn't say anything about that, so it's a "your
+  problem" pattern.
 
 ---
 

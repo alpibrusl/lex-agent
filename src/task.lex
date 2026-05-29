@@ -165,6 +165,98 @@ fn task_to_json(t :: Task) -> jv.Json {
   JObj(with_msg)
 }
 
+# Inverse of `task_to_json`. The durable (SQLite) task store persists
+# tasks as their canonical wire JSON and rebuilds them on read, so
+# this is the load half of that round-trip. `id` and `status.state`
+# are required (a stored task without them is corrupt); `message`,
+# `artifacts`, and `history` are reconstructed best-effort, dropping
+# any individual entry that fails to parse rather than failing the
+# whole task — A2A parse tolerance, applied to our own storage.
+fn task_from_json(j :: jv.Json) -> Result[Task, Str] {
+  match jv.get_field(j, "id") {
+    None      => Err("task json missing `id`"),
+    Some(idj) => match jv.as_str(idj) {
+      None     => Err("task `id` must be a string"),
+      Some(id) => match parse_state_field(j) {
+        Err(e) => Err(e),
+        Ok(st) => Ok({
+          id:         id,
+          context_id: parse_context_id_field(j),
+          state:      st,
+          message:    parse_message_field(j),
+          artifacts:  parse_artifacts_field(j),
+          history:    parse_history_field(j),
+        }),
+      },
+    },
+  }
+}
+
+fn parse_context_id_field(j :: jv.Json) -> Str {
+  match jv.get_field(j, "contextId") {
+    Some(v) => match jv.as_str(v) { Some(s) => s, None => "" },
+    None    => "",
+  }
+}
+
+fn parse_state_field(j :: jv.Json) -> Result[TaskState, Str] {
+  match jv.get_field(j, "status") {
+    None     => Err("task json missing `status`"),
+    Some(sj) => match jv.get_field(sj, "state") {
+      None     => Err("task `status` missing `state`"),
+      Some(sv) => match jv.as_str(sv) {
+        None    => Err("task `state` must be a string"),
+        Some(s) => match state_of(s) {
+          None     => Err(str.concat("unknown task state: ", s)),
+          Some(ts) => Ok(ts),
+        },
+      },
+    },
+  }
+}
+
+fn parse_message_field(j :: jv.Json) -> Option[msg.Message] {
+  match jv.get_field(j, "message") {
+    None     => None,
+    Some(mj) => match msg.parse_message(mj) {
+      Ok(m)  => Some(m),
+      Err(_) => None,
+    },
+  }
+}
+
+fn parse_history_field(j :: jv.Json) -> List[msg.Message] {
+  match jv.get_field(j, "history") {
+    None     => [],
+    Some(hj) => match jv.as_list(hj) {
+      None        => [],
+      Some(items) => list.fold(items, [],
+        fn (acc :: List[msg.Message], it :: jv.Json) -> List[msg.Message] {
+          match msg.parse_message(it) {
+            Ok(m)  => list.concat(acc, [m]),
+            Err(_) => acc,
+          }
+        }),
+    },
+  }
+}
+
+fn parse_artifacts_field(j :: jv.Json) -> List[msg.Artifact] {
+  match jv.get_field(j, "artifacts") {
+    None     => [],
+    Some(aj) => match jv.as_list(aj) {
+      None        => [],
+      Some(items) => list.fold(items, [],
+        fn (acc :: List[msg.Artifact], it :: jv.Json) -> List[msg.Artifact] {
+          match msg.parse_artifact(it) {
+            Ok(a)  => list.concat(acc, [a]),
+            Err(_) => acc,
+          }
+        }),
+    },
+  }
+}
+
 # A "status update" SSE event — the wire-frame an `tasks/sendSubscribe`
 # subscriber receives between full Task snapshots. Keeps the payload
 # small: state code + optional message.
