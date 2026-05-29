@@ -29,73 +29,58 @@
 #                   "parts":[{"type":"text","text":"hello"}]}}}'
 
 import "std.net" as net
+
 import "std.str" as str
+
 import "std.list" as list
 
 import "lex-schema/schema" as sch
 
-import "lex-spec/spec"       as sp
+import "lex-spec/spec" as sp
+
 import "lex-spec/capability" as cap
 
-import "lex-web/ctx"        as ctx
-import "lex-web/response"   as resp
-import "lex-web/router"     as router
+import "lex-web/ctx" as ctx
+
+import "lex-web/response" as resp
+
+import "lex-web/router" as router
+
 import "lex-web/middleware" as mw
 
 import "../src/agent_card" as card
-import "../src/server"     as srv
-import "../src/mount"      as mount
-import "../src/message"    as msg
-import "../src/task"       as tk
+
+import "../src/server" as srv
+
+import "../src/mount" as mount
+
+import "../src/message" as msg
+
+import "../src/task" as tk
 
 # ---- Capability + handler (mirrors 01_ping_pong) -----------------
-
 fn nonempty_text_spec() -> sp.Spec {
-  {
-    name: "input_nonempty",
-    quantifiers: [QRecord({
-      name: "args",
-      fields: [{ name: "text", ty: TStr }],
-    })],
-    predicate: EBinop({
-      op: "!=",
-      lhs: EField({ binding: "args", field: "text" }),
-      rhs: EConst(VStr("")),
-    }),
-  }
+  { name: "input_nonempty", quantifiers: [QRecord({ name: "args", fields: [{ name: "text", ty: TStr }] })], predicate: EBinop({ op: "!=", lhs: EField({ binding: "args", field: "text" }), rhs: EConst(VStr("")) }) }
 }
 
 fn echo_capability() -> cap.Capability {
-  let base := cap.inbound("echo", "Reply with the input text.",
-    {
-      title:       "EchoArgs",
-      description: "",
-      fields:      [sch.required_str("text", [StrNonEmpty])],
-    })
+  let base := cap.inbound("echo", "Reply with the input text.", { title: "EchoArgs", description: "", fields: [sch.required_str("text", [StrNonEmpty])] })
   cap.with_precondition(base, nonempty_text_spec())
 }
 
 fn first_text(parts :: List[msg.Part]) -> Str {
   match list.head(parts) {
     Some(TextPart(s)) => s,
-    _                 => "",
+    _ => "",
   }
 }
 
 fn echo_handler(m :: msg.Message) -> srv.HandlerOutcome {
-  {
-    next_state: TSCompleted,
-    reply:      Some(msg.agent_text(str.concat("pong: ", first_text(m.parts)))),
-    artifacts:  [],
-  }
+  { next_state: TSCompleted, reply: Some(msg.agent_text(str.concat("pong: ", first_text(m.parts)))), artifacts: [] }
 }
 
 fn make_agent() -> srv.AgentDef {
-  srv.make_agent_def(
-    card.make("ping-pong", "demo A2A agent on top of lex-web",
-      "0.1.0", "http://localhost:4040",
-      [echo_capability()]),
-    [{ capability: echo_capability(), handle: echo_handler }])
+  srv.make_agent_def(card.make("ping-pong", "demo A2A agent on top of lex-web", "0.1.0", "http://localhost:4040", [echo_capability()]), [{ capability: echo_capability(), handle: echo_handler }])
 }
 
 # ---- Side route — `/healthz` for readiness checks ----------------
@@ -107,17 +92,9 @@ fn healthz(_c :: ctx.Ctx) -> resp.Response {
 }
 
 # ---- App assembly ------------------------------------------------
-
 fn app() -> router.Router {
   let base := router.new()
-  let with_mw :=
-    router.use_mw(
-      router.use_mw(
-        router.use_mw(
-          router.use_mw(base, mw.body_limit(1_048_576)),
-          mw.request_id()),
-        mw.gzip(1_024)),
-      mw.logger())
+  let with_mw := router.use_mw(router.use_mw(router.use_mw(router.use_mw(base, mw.body_limit(1048576)), mw.request_id()), mw.gzip(1024)), mw.logger())
   let with_health := router.route(with_mw, "GET", "/healthz", healthz)
   mount.mount(with_health, make_agent())
 }
@@ -129,7 +106,6 @@ fn app() -> router.Router {
 # `ctx.RawRequest` -> `resp.Response` (with `body :: Str`). The
 # boundary adapter rebuilds the request as a `RawRequest` literal
 # and re-wraps the response body via `BodyStr(...)` on the way out.
-
 fn handle(req :: Request) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] Response {
   let raw := { body: req.body, method: req.method, path: req.path, query: req.query, headers: req.headers }
   let r := router.dispatch(app(), raw)
@@ -139,3 +115,4 @@ fn handle(req :: Request) -> [io, time, crypto, random, sql, fs_read, fs_write, 
 fn main() -> [net, io, time, crypto, random, sql, fs_read, fs_write, concurrent] Nil {
   net.serve_fn(4040, handle)
 }
+

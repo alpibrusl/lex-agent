@@ -12,9 +12,9 @@ import "lex-schema/schema" as sch
 
 import "lex-spec/capability" as cap
 
-import "lex-trail/log" as trail
-
 import "lex-trail/event" as ev
+
+import "lex-trail/log" as trail
 
 import "../src/agent_card" as card
 
