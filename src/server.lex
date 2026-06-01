@@ -73,7 +73,7 @@ type HandlerOutcome = { next_state :: tk.TaskState, reply :: Option[msg.Message]
 # via subset, and the choice of row is what lets `src/mount.lex`
 # register a single `POST /` route that calls back into
 # `dispatch_request` without an effect-row impedance.
-type Skill = { capability :: cap.Capability, handle :: (msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] HandlerOutcome }
+type Skill = { capability :: cap.Capability, handle :: (msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] HandlerOutcome }
 
 # ---- AgentDef ----------------------------------------------------
 #
@@ -130,14 +130,14 @@ fn emit_msg_sent_if_reply(log :: Option[trail.Log], task_id :: Str, reply :: Opt
 # `dispatch_request(agent, body)` is the single entry point: takes a
 # raw HTTP body, returns a JSON-RPC response string. Pure-ish: the
 # only effects come from the handler closures.
-fn dispatch_request(agent :: AgentDef, body :: Str) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] Str {
+fn dispatch_request(agent :: AgentDef, body :: Str) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Str {
   match proto.parse_request(body) {
     Err(rpcerr) => proto.response_to_str(ResErr(IdNull, rpcerr)),
     Ok(req) => proto.response_to_str(handle_method(agent, req)),
   }
 }
 
-fn handle_method(agent :: AgentDef, req :: proto.Request) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] proto.Response {
+fn handle_method(agent :: AgentDef, req :: proto.Request) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] proto.Response {
   if req.method == proto.method_tasks_send() {
     handle_tasks_send(agent, req)
   } else {
@@ -174,7 +174,7 @@ fn handle_method(agent :: AgentDef, req :: proto.Request) -> [io, time, crypto, 
 # A2A reference servers route to skills via prior `tasks/get` of the
 # AgentCard skill list; we accept an explicit `skill` field for
 # directness. If omitted, we attempt single-skill dispatch.
-fn handle_tasks_send(agent :: AgentDef, req :: proto.Request) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] proto.Response {
+fn handle_tasks_send(agent :: AgentDef, req :: proto.Request) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] proto.Response {
   let params := req.params
   match required_str(params, "id") {
     Err(e) => proto.fail(req.id, proto.err_invalid_params(), e),
@@ -214,7 +214,7 @@ fn required_context_id(params :: jv.Json) -> Result[Str, Str] {
   }
 }
 
-fn dispatch_skill(agent :: AgentDef, rpc_id :: proto.RpcId, task_id :: Str, ctx_id :: Str, m :: msg.Message, skill_name :: Str) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] proto.Response {
+fn dispatch_skill(agent :: AgentDef, rpc_id :: proto.RpcId, task_id :: Str, ctx_id :: Str, m :: msg.Message, skill_name :: Str) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] proto.Response {
   let resolved := if str.is_empty(skill_name) {
     match list.head(agent.skills) {
       Some(s) => Some(s),
@@ -229,7 +229,7 @@ fn dispatch_skill(agent :: AgentDef, rpc_id :: proto.RpcId, task_id :: Str, ctx_
   }
 }
 
-fn run_skill(skill :: Skill, store_ref :: Option[Actor[Map[Str, tk.Task]]], trail_log :: Option[trail.Log], rpc_id :: proto.RpcId, task_id :: Str, ctx_id :: Str, m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] proto.Response {
+fn run_skill(skill :: Skill, store_ref :: Option[Actor[Map[Str, tk.Task]]], trail_log :: Option[trail.Log], rpc_id :: proto.RpcId, task_id :: Str, ctx_id :: Str, m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] proto.Response {
   let bindings := [("args", bindings_from_message(m))]
   match cap.gate(skill.capability, bindings) {
     Deny(reason) => proto.fail(rpc_id, proto.err_spec_denied(), str.concat("spec-denied: ", reason)),
@@ -317,7 +317,7 @@ fn first_text_part(parts :: List[msg.Part]) -> Str {
 # and returns it as the JSON-RPC result. Without a store, replies
 # `-32001 task-not-found` — same shape as the v0.1 stub so callers
 # that didn't opt in see no behaviour change.
-fn handle_tasks_get(agent :: AgentDef, req :: proto.Request) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] proto.Response {
+fn handle_tasks_get(agent :: AgentDef, req :: proto.Request) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] proto.Response {
   match required_str(req.params, "id") {
     Err(e) => proto.fail(req.id, proto.err_invalid_params(), e),
     Ok(id) => match agent.store {
@@ -336,7 +336,7 @@ fn handle_tasks_get(agent :: AgentDef, req :: proto.Request) -> [io, time, crypt
 # transition via `tk.advance(t, TSCanceled, None)` — already-terminal
 # tasks (completed / failed / canceled) surface as `-32002
 # not-cancelable`. Missing-id surfaces as `task-not-found`.
-fn handle_tasks_cancel(agent :: AgentDef, req :: proto.Request) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] proto.Response {
+fn handle_tasks_cancel(agent :: AgentDef, req :: proto.Request) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] proto.Response {
   match required_str(req.params, "id") {
     Err(e) => proto.fail(req.id, proto.err_invalid_params(), e),
     Ok(id) => match agent.store {
@@ -428,20 +428,20 @@ fn is_subscribe_body(body :: Str) -> Bool {
   str.contains(body, "\"tasks/sendSubscribe\"")
 }
 
-fn dispatch_subscribe_str(agent :: AgentDef, body :: Str) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] Str {
+fn dispatch_subscribe_str(agent :: AgentDef, body :: Str) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Str {
   list.fold(dispatch_sse_frames(agent, body), "", fn (acc :: Str, frame :: Str) -> Str {
     str.concat(acc, frame)
   })
 }
 
-fn dispatch_sse_frames(agent :: AgentDef, body :: Str) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] List[Str] {
+fn dispatch_sse_frames(agent :: AgentDef, body :: Str) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] List[Str] {
   match proto.parse_request(body) {
     Err(rpcerr) => [ssem.encode_data(proto.response_to_json(ResErr(IdNull, rpcerr)))],
     Ok(req) => build_subscribe_frames(agent, req),
   }
 }
 
-fn build_subscribe_frames(agent :: AgentDef, req :: proto.Request) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] List[Str] {
+fn build_subscribe_frames(agent :: AgentDef, req :: proto.Request) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] List[Str] {
   let params := req.params
   match required_str(params, "id") {
     Err(e) => [sse_error_frame(req.id, proto.err_invalid_params(), e)],
@@ -463,7 +463,7 @@ fn build_subscribe_frames(agent :: AgentDef, req :: proto.Request) -> [io, time,
   }
 }
 
-fn run_skill_subscribe(agent :: AgentDef, rpc_id :: proto.RpcId, task_id :: Str, ctx_id :: Str, m :: msg.Message, skill_name :: Str) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] List[Str] {
+fn run_skill_subscribe(agent :: AgentDef, rpc_id :: proto.RpcId, task_id :: Str, ctx_id :: Str, m :: msg.Message, skill_name :: Str) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] List[Str] {
   let resolved := if str.is_empty(skill_name) {
     match list.head(agent.skills) {
       Some(s) => Some(s),
@@ -478,7 +478,7 @@ fn run_skill_subscribe(agent :: AgentDef, rpc_id :: proto.RpcId, task_id :: Str,
   }
 }
 
-fn emit_skill_frames(skill :: Skill, store_ref :: Option[Actor[Map[Str, tk.Task]]], trail_log :: Option[trail.Log], rpc_id :: proto.RpcId, task_id :: Str, ctx_id :: Str, m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] List[Str] {
+fn emit_skill_frames(skill :: Skill, store_ref :: Option[Actor[Map[Str, tk.Task]]], trail_log :: Option[trail.Log], rpc_id :: proto.RpcId, task_id :: Str, ctx_id :: Str, m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] List[Str] {
   let bindings := [("args", bindings_from_message(m))]
   match cap.gate(skill.capability, bindings) {
     Deny(_) => {
