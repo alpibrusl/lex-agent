@@ -68,6 +68,6 @@ fn rpc_route(agent :: srv.AgentDef) -> (ctx.Ctx) -> [io, time, crypto, random, s
 # `router.use_mw` calls.
 fn mount(r :: router.Router, agent :: srv.AgentDef) -> router.Router {
   let with_card := router.route(r, "GET", "/.well-known/agent.json", card_route(agent))
-  router.route_effectful(with_card, "POST", "/", rpc_route(agent))  # route_effectful accepts the wider row via structural subtyping
+  router.route_effectful_llm(with_card, "POST", "/", rpc_route(agent))
 }
 
