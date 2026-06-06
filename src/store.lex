@@ -39,10 +39,13 @@
 #     uses `[sql]`, the in-memory arm uses `[concurrent]`; the row is
 #     the union. Both are already in the server's dispatch row.
 
-import "std.map"  as map
+import "std.map" as map
+
 import "std.conc" as conc
+
 import "std.list" as list
-import "std.sql"  as sql
+
+import "std.sql" as sql
 
 import "lex-schema/json_value" as jv
 
@@ -54,37 +57,15 @@ import "./task" as tk
 # `open_store` turns it into a live `Store`. Defaults to in-memory
 # (call `spawn_store` / `open_store(InMemoryStore)`) for backward
 # compatibility with the v0.2 actor-only store.
+type StoreConfig = InMemoryStore | SqliteStore(Str)
 
-type StoreConfig =
-    InMemoryStore
-  | SqliteStore(Str)        # path to the SQLite database file
+type Store = InMemory(Actor[Map[Str, tk.Task]]) | Sqlite(Db)
 
-type Store =
-    InMemory(Actor[Map[Str, tk.Task]])
-  | Sqlite(Db)
+type StoreMsg = MsgPut(tk.Task) | MsgGet(Str) | MsgCancel(Str)
 
-# ---- In-memory actor protocol ------------------------------------
-#
-# `StoreMsg` is what gets sent to the actor. `StoreReply` is the
-# response shape `conc.ask` returns. The reply discriminator mirrors
-# the request so callers can `match` on it confidently.
+type StoreReply = RepPut | RepGet(Option[tk.Task]) | RepCancel(Result[tk.Task, Str])
 
-type StoreMsg =
-    MsgPut(tk.Task)
-  | MsgGet(Str)
-  | MsgCancel(Str)
-
-type StoreReply =
-    RepPut
-  | RepGet(Option[tk.Task])
-  | RepCancel(Result[tk.Task, Str])
-
-# Pure fold: `(state, msg) -> (state', reply)`. The actor framework
-# calls this on every inbound message; state threads through.
-fn store_handler(
-  state :: Map[Str, tk.Task],
-  msg :: StoreMsg
-) -> (Map[Str, tk.Task], StoreReply) {
+fn store_handler(state :: Map[Str, tk.Task], msg :: StoreMsg) -> (Map[Str, tk.Task], StoreReply) {
   match msg {
     MsgPut(t) => (map.set(state, t.id, t), RepPut),
     MsgGet(id) => (state, RepGet(map.get(state, id))),
@@ -99,11 +80,10 @@ fn store_handler(
 }
 
 # ---- Opening / spawning ------------------------------------------
-
 # Resolve a `StoreConfig` into a live `Store`.
 fn open_store(cfg :: StoreConfig) -> [sql, fs_write, concurrent] Result[Store, Str] {
   match cfg {
-    InMemoryStore  => Ok(spawn_store()),
+    InMemoryStore => Ok(spawn_store()),
     SqliteStore(p) => open_sqlite(p),
   }
 }
@@ -120,7 +100,7 @@ fn open_sqlite(path :: Str) -> [sql, fs_write] Result[Store, Str] {
     Err(e) => Err(e.message),
     Ok(db) => match init_schema(db) {
       Err(e2) => Err(e2),
-      Ok(_)   => Ok(Sqlite(db)),
+      Ok(_) => Ok(Sqlite(db)),
     },
   }
 }
@@ -133,35 +113,33 @@ fn init_schema(db :: Db) -> [sql] Result[Unit, Str] {
   let ddl := "CREATE TABLE IF NOT EXISTS a2a_tasks (id TEXT PRIMARY KEY, context_id TEXT NOT NULL, state TEXT NOT NULL, task_json TEXT NOT NULL)"
   match sql.exec(db, ddl, []) {
     Err(e) => Err(e.message),
-    Ok(_)  => Ok(()),
+    Ok(_) => Ok(()),
   }
 }
 
 # ---- Unified store interface -------------------------------------
-
 fn put(s :: Store, t :: tk.Task) -> [sql, concurrent] Unit {
   match s {
     InMemory(a) => mem_put(a, t),
-    Sqlite(db)  => sql_put(db, t),
+    Sqlite(db) => sql_put(db, t),
   }
 }
 
 fn get(s :: Store, id :: Str) -> [sql, concurrent] Option[tk.Task] {
   match s {
     InMemory(a) => mem_get(a, id),
-    Sqlite(db)  => sql_get(db, id),
+    Sqlite(db) => sql_get(db, id),
   }
 }
 
 fn cancel(s :: Store, id :: Str) -> [sql, concurrent] Result[tk.Task, Str] {
   match s {
     InMemory(a) => mem_cancel(a, id),
-    Sqlite(db)  => sql_cancel(db, id),
+    Sqlite(db) => sql_cancel(db, id),
   }
 }
 
 # ---- In-memory backend -------------------------------------------
-
 fn mem_put(actor :: Actor[Map[Str, tk.Task]], t :: tk.Task) -> [concurrent] Unit {
   let __discard := conc.tell(actor, MsgPut(t))
   ()
@@ -170,14 +148,14 @@ fn mem_put(actor :: Actor[Map[Str, tk.Task]], t :: tk.Task) -> [concurrent] Unit
 fn mem_get(actor :: Actor[Map[Str, tk.Task]], id :: Str) -> [concurrent] Option[tk.Task] {
   match conc.ask(actor, MsgGet(id)) {
     RepGet(opt) => opt,
-    _           => None,
+    _ => None,
   }
 }
 
 fn mem_cancel(actor :: Actor[Map[Str, tk.Task]], id :: Str) -> [concurrent] Result[tk.Task, Str] {
   match conc.ask(actor, MsgCancel(id)) {
     RepCancel(r) => r,
-    _            => Err("unexpected reply from store"),
+    _ => Err("unexpected reply from store"),
   }
 }
 
@@ -189,27 +167,23 @@ fn mem_cancel(actor :: Actor[Map[Str, tk.Task]], id :: Str) -> [concurrent] Resu
 # `cancel` is read-advance-write through the lifecycle gate, exactly
 # like the in-memory actor — terminal tasks surface the
 # `InvalidTransition` message which the server maps to `-32002`.
-
 fn sql_put(db :: Db, t :: tk.Task) -> [sql] Unit {
   let payload := jv.stringify(tk.task_to_json(t))
-  let __discard := sql.exec(db,
-    "INSERT OR REPLACE INTO a2a_tasks (id, context_id, state, task_json) VALUES (?, ?, ?, ?)",
-    [PStr(t.id), PStr(t.context_id), PStr(tk.state_label(t.state)), PStr(payload)])
+  let __discard := sql.exec(db, "INSERT OR REPLACE INTO a2a_tasks (id, context_id, state, task_json) VALUES (?, ?, ?, ?)", [PStr(t.id), PStr(t.context_id), PStr(tk.state_label(t.state)), PStr(payload)])
   ()
 }
 
 fn sql_get(db :: Db, id :: Str) -> [sql] Option[tk.Task] {
-  let rows :: Result[List[{ task_json :: Str }], SqlError] :=
-    sql.query(db, "SELECT task_json FROM a2a_tasks WHERE id = ?", [PStr(id)])
+  let rows :: Result[List[{ task_json :: Str }], SqlError] := sql.query(db, "SELECT task_json FROM a2a_tasks WHERE id = ?", [PStr(id)])
   match rows {
     Err(_) => None,
     Ok(rs) => match list.head(rs) {
-      None    => None,
+      None => None,
       Some(r) => match jv.parse(r.task_json) {
         Err(_) => None,
-        Ok(j)  => match tk.task_from_json(j) {
+        Ok(j) => match tk.task_from_json(j) {
           Err(_) => None,
-          Ok(t)  => Some(t),
+          Ok(t) => Some(t),
         },
       },
     },
@@ -218,7 +192,7 @@ fn sql_get(db :: Db, id :: Str) -> [sql] Option[tk.Task] {
 
 fn sql_cancel(db :: Db, id :: Str) -> [sql] Result[tk.Task, Str] {
   match sql_get(db, id) {
-    None    => Err("task not found"),
+    None => Err("task not found"),
     Some(t) => match tk.advance(t, TSCanceled, None) {
       Err(e) => Err(tk.task_error_message(e)),
       Ok(t2) => {
@@ -228,3 +202,4 @@ fn sql_cancel(db :: Db, id :: Str) -> [sql] Result[tk.Task, Str] {
     },
   }
 }
+

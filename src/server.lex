@@ -85,7 +85,7 @@ type Skill = { capability :: cap.Capability, handle :: (msg.Message) -> [io, tim
 # `trail` is an optional lex-trail Log; when present, every A2A
 # protocol method emits an `a2a.*` event for end-to-end auditability.
 # Attach via `with_trail(agent, log)`.
-type AgentDef = { card :: card.AgentCard, skills :: List[Skill], store :: Option[Actor[Map[Str, tk.Task]]], trail :: Option[trail.Log] }
+type AgentDef = { card :: card.AgentCard, skills :: List[Skill], store :: Option[store.Store], trail :: Option[trail.Log] }
 
 fn make_agent_def(c :: card.AgentCard, skills :: List[Skill]) -> AgentDef {
   { card: c, skills: skills, store: None, trail: None }
@@ -93,8 +93,8 @@ fn make_agent_def(c :: card.AgentCard, skills :: List[Skill]) -> AgentDef {
 
 # Attach a task store. Callers spawn the actor via
 # `store.spawn_store()` once at boot and pipe the address in here.
-fn with_store(agent :: AgentDef, addr :: Actor[Map[Str, tk.Task]]) -> AgentDef {
-  { card: agent.card, skills: agent.skills, store: Some(addr), trail: agent.trail }
+fn with_store(agent :: AgentDef, s :: store.Store) -> AgentDef {
+  { card: agent.card, skills: agent.skills, store: Some(s), trail: agent.trail }
 }
 
 # Attach a trail log. Every A2A protocol method will emit an
@@ -229,7 +229,7 @@ fn dispatch_skill(agent :: AgentDef, rpc_id :: proto.RpcId, task_id :: Str, ctx_
   }
 }
 
-fn run_skill(skill :: Skill, store_ref :: Option[Actor[Map[Str, tk.Task]]], trail_log :: Option[trail.Log], rpc_id :: proto.RpcId, task_id :: Str, ctx_id :: Str, m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] proto.Response {
+fn run_skill(skill :: Skill, store_ref :: Option[store.Store], trail_log :: Option[trail.Log], rpc_id :: proto.RpcId, task_id :: Str, ctx_id :: Str, m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] proto.Response {
   let bindings := [("args", bindings_from_message(m))]
   match cap.gate(skill.capability, bindings) {
     Deny(reason) => proto.fail(rpc_id, proto.err_spec_denied(), str.concat("spec-denied: ", reason)),
@@ -264,10 +264,10 @@ fn run_skill(skill :: Skill, store_ref :: Option[Actor[Map[Str, tk.Task]]], trai
 # Fire-and-forget write into the optional store. Pulled out as its
 # own fn so the [concurrent] effect stays localised and the call
 # site stays readable.
-fn persist(s :: Option[Actor[Map[Str, tk.Task]]], t :: tk.Task) -> [concurrent] Unit {
+fn persist(s :: Option[store.Store], t :: tk.Task) -> [sql, concurrent] Unit {
   match s {
     None => (),
-    Some(addr) => store.put(addr, t),
+    Some(st) => store.put(st, t),
   }
 }
 
@@ -322,7 +322,7 @@ fn handle_tasks_get(agent :: AgentDef, req :: proto.Request) -> [io, time, crypt
     Err(e) => proto.fail(req.id, proto.err_invalid_params(), e),
     Ok(id) => match agent.store {
       None => proto.fail(req.id, proto.err_task_not_found(), str.concat("task not found: ", id)),
-      Some(addr) => match store.get(addr, id) {
+      Some(st) => match store.get(st, id) {
         None => proto.fail(req.id, proto.err_task_not_found(), str.concat("task not found: ", id)),
         Some(t) => proto.ok(req.id, tk.task_to_json(t)),
       },
@@ -341,7 +341,7 @@ fn handle_tasks_cancel(agent :: AgentDef, req :: proto.Request) -> [io, time, cr
     Err(e) => proto.fail(req.id, proto.err_invalid_params(), e),
     Ok(id) => match agent.store {
       None => proto.fail(req.id, proto.err_not_cancelable(), str.concat("no cancel-tracking actor for: ", id)),
-      Some(addr) => match store.cancel(addr, id) {
+      Some(st) => match store.cancel(st, id) {
         Err(reason) => {
           if str.contains(reason, "not found") {
             proto.fail(req.id, proto.err_task_not_found(), str.concat("task not found: ", id))
@@ -478,7 +478,7 @@ fn run_skill_subscribe(agent :: AgentDef, rpc_id :: proto.RpcId, task_id :: Str,
   }
 }
 
-fn emit_skill_frames(skill :: Skill, store_ref :: Option[Actor[Map[Str, tk.Task]]], trail_log :: Option[trail.Log], rpc_id :: proto.RpcId, task_id :: Str, ctx_id :: Str, m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] List[Str] {
+fn emit_skill_frames(skill :: Skill, store_ref :: Option[store.Store], trail_log :: Option[trail.Log], rpc_id :: proto.RpcId, task_id :: Str, ctx_id :: Str, m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] List[Str] {
   let bindings := [("args", bindings_from_message(m))]
   match cap.gate(skill.capability, bindings) {
     Deny(_) => {

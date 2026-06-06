@@ -174,19 +174,12 @@ fn task_to_json(t :: Task) -> jv.Json {
 # whole task — A2A parse tolerance, applied to our own storage.
 fn task_from_json(j :: jv.Json) -> Result[Task, Str] {
   match jv.get_field(j, "id") {
-    None      => Err("task json missing `id`"),
+    None => Err("task json missing `id`"),
     Some(idj) => match jv.as_str(idj) {
-      None     => Err("task `id` must be a string"),
+      None => Err("task `id` must be a string"),
       Some(id) => match parse_state_field(j) {
         Err(e) => Err(e),
-        Ok(st) => Ok({
-          id:         id,
-          context_id: parse_context_id_field(j),
-          state:      st,
-          message:    parse_message_field(j),
-          artifacts:  parse_artifacts_field(j),
-          history:    parse_history_field(j),
-        }),
+        Ok(st) => Ok({ id: id, context_id: parse_context_id_field(j), state: st, message: parse_message_field(j), artifacts: parse_artifacts_field(j), history: parse_history_field(j) }),
       },
     },
   }
@@ -194,20 +187,23 @@ fn task_from_json(j :: jv.Json) -> Result[Task, Str] {
 
 fn parse_context_id_field(j :: jv.Json) -> Str {
   match jv.get_field(j, "contextId") {
-    Some(v) => match jv.as_str(v) { Some(s) => s, None => "" },
-    None    => "",
+    Some(v) => match jv.as_str(v) {
+      Some(s) => s,
+      None => "",
+    },
+    None => "",
   }
 }
 
 fn parse_state_field(j :: jv.Json) -> Result[TaskState, Str] {
   match jv.get_field(j, "status") {
-    None     => Err("task json missing `status`"),
+    None => Err("task json missing `status`"),
     Some(sj) => match jv.get_field(sj, "state") {
-      None     => Err("task `status` missing `state`"),
+      None => Err("task `status` missing `state`"),
       Some(sv) => match jv.as_str(sv) {
-        None    => Err("task `state` must be a string"),
+        None => Err("task `state` must be a string"),
         Some(s) => match state_of(s) {
-          None     => Err(str.concat("unknown task state: ", s)),
+          None => Err(str.concat("unknown task state: ", s)),
           Some(ts) => Ok(ts),
         },
       },
@@ -217,9 +213,9 @@ fn parse_state_field(j :: jv.Json) -> Result[TaskState, Str] {
 
 fn parse_message_field(j :: jv.Json) -> Option[msg.Message] {
   match jv.get_field(j, "message") {
-    None     => None,
+    None => None,
     Some(mj) => match msg.parse_message(mj) {
-      Ok(m)  => Some(m),
+      Ok(m) => Some(m),
       Err(_) => None,
     },
   }
@@ -227,32 +223,30 @@ fn parse_message_field(j :: jv.Json) -> Option[msg.Message] {
 
 fn parse_history_field(j :: jv.Json) -> List[msg.Message] {
   match jv.get_field(j, "history") {
-    None     => [],
+    None => [],
     Some(hj) => match jv.as_list(hj) {
-      None        => [],
-      Some(items) => list.fold(items, [],
-        fn (acc :: List[msg.Message], it :: jv.Json) -> List[msg.Message] {
-          match msg.parse_message(it) {
-            Ok(m)  => list.concat(acc, [m]),
-            Err(_) => acc,
-          }
-        }),
+      None => [],
+      Some(items) => list.fold(items, [], fn (acc :: List[msg.Message], it :: jv.Json) -> List[msg.Message] {
+        match msg.parse_message(it) {
+          Ok(m) => list.concat(acc, [m]),
+          Err(_) => acc,
+        }
+      }),
     },
   }
 }
 
 fn parse_artifacts_field(j :: jv.Json) -> List[msg.Artifact] {
   match jv.get_field(j, "artifacts") {
-    None     => [],
+    None => [],
     Some(aj) => match jv.as_list(aj) {
-      None        => [],
-      Some(items) => list.fold(items, [],
-        fn (acc :: List[msg.Artifact], it :: jv.Json) -> List[msg.Artifact] {
-          match msg.parse_artifact(it) {
-            Ok(a)  => list.concat(acc, [a]),
-            Err(_) => acc,
-          }
-        }),
+      None => [],
+      Some(items) => list.fold(items, [], fn (acc :: List[msg.Artifact], it :: jv.Json) -> List[msg.Artifact] {
+        match msg.parse_artifact(it) {
+          Ok(a) => list.concat(acc, [a]),
+          Err(_) => acc,
+        }
+      }),
     },
   }
 }

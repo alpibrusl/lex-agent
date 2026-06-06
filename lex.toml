@@ -5,11 +5,7 @@ lex         = "0.9.7"
 description = "Pure-Lex implementation of the Google Agent2Agent (A2A) protocol — AgentCard, JSON-RPC 2.0 envelope, Task lifecycle, SSE streaming."
 
 [dependencies]
-# path deps so all packages in the workspace share the same module hash.
-# git deps create a separate hash instance even for identical content
-# (the dep spec is part of the hash key in Lex 0.9.5), causing diamond
-# conflicts when lex-code (or any sibling) also pulls these via path.
-lex-schema = { path = "../lex-schema" }
-lex-spec   = { path = "../lex-spec" }
-lex-web    = { path = "../lex-web" }
-lex-trail  = { path = "../lex-trail" }
+lex-schema = { git = "https://github.com/alpibrusl/lex-schema" }
+lex-spec   = { git = "https://github.com/alpibrusl/lex-spec" }
+lex-web    = { git = "https://github.com/alpibrusl/lex-web" }
+lex-trail  = { git = "https://github.com/alpibrusl/lex-trail" }

@@ -29,7 +29,7 @@ fn echo_cap() -> cap.Capability {
   cap.inbound("echo", "test echo skill", { title: "Args", description: "", fields: [] })
 }
 
-fn echo_handler(m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] srv.HandlerOutcome {
+fn echo_handler(m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] srv.HandlerOutcome {
   { next_state: TSCompleted, reply: Some(msg.agent_text("pong")), artifacts: [] }
 }
 
@@ -53,7 +53,7 @@ fn has_kind(log :: trail.Log, kind :: Str) -> [sql] Bool {
 }
 
 # ---- Tests ------------------------------------------------------
-fn test_dispatch_emits_task_received() -> [sql, fs_write, time, io, crypto, random, fs_read, net, concurrent] Result[Unit, Str] {
+fn test_dispatch_emits_task_received() -> [sql, fs_write, time, io, crypto, random, fs_read, net, concurrent, llm, proc] Result[Unit, Str] {
   match trail.open_memory() {
     Err(e) => Err(str.concat("open_memory: ", e)),
     Ok(log) => {
@@ -68,7 +68,7 @@ fn test_dispatch_emits_task_received() -> [sql, fs_write, time, io, crypto, rand
   }
 }
 
-fn test_dispatch_emits_state_change() -> [sql, fs_write, time, io, crypto, random, fs_read, net, concurrent] Result[Unit, Str] {
+fn test_dispatch_emits_state_change() -> [sql, fs_write, time, io, crypto, random, fs_read, net, concurrent, llm, proc] Result[Unit, Str] {
   match trail.open_memory() {
     Err(e) => Err(str.concat("open_memory: ", e)),
     Ok(log) => {
@@ -83,7 +83,7 @@ fn test_dispatch_emits_state_change() -> [sql, fs_write, time, io, crypto, rando
   }
 }
 
-fn test_dispatch_emits_message_sent() -> [sql, fs_write, time, io, crypto, random, fs_read, net, concurrent] Result[Unit, Str] {
+fn test_dispatch_emits_message_sent() -> [sql, fs_write, time, io, crypto, random, fs_read, net, concurrent, llm, proc] Result[Unit, Str] {
   match trail.open_memory() {
     Err(e) => Err(str.concat("open_memory: ", e)),
     Ok(log) => {
@@ -98,17 +98,17 @@ fn test_dispatch_emits_message_sent() -> [sql, fs_write, time, io, crypto, rando
   }
 }
 
-fn test_dispatch_no_trail_is_fine() -> [sql, fs_write, time, io, crypto, random, fs_read, net, concurrent] Result[Unit, Str] {
+fn test_dispatch_no_trail_is_fine() -> [sql, fs_write, time, io, crypto, random, fs_read, net, concurrent, llm, proc] Result[Unit, Str] {
   let base := srv.make_agent_def(card.make("test", "test agent", "0.0.1", "http://localhost", [echo_cap()]), [{ capability: echo_cap(), handle: echo_handler }])
   let _resp := srv.dispatch_request(base, good_envelope())
   Ok(())
 }
 
-fn suite() -> [sql, fs_write, time, io, crypto, random, fs_read, net, concurrent] List[Result[Unit, Str]] {
+fn suite() -> [sql, fs_write, time, io, crypto, random, fs_read, net, concurrent, llm, proc] List[Result[Unit, Str]] {
   [test_dispatch_emits_task_received(), test_dispatch_emits_state_change(), test_dispatch_emits_message_sent(), test_dispatch_no_trail_is_fine()]
 }
 
-fn run_all() -> [sql, fs_write, time, io, crypto, random, fs_read, net, concurrent] Int {
+fn run_all() -> [sql, fs_write, time, io, crypto, random, fs_read, net, concurrent, llm, proc] Int {
   list.fold(suite(), 0, fn (acc :: Int, v :: Result[Unit, Str]) -> Int {
     match v {
       Ok(_) => acc,
