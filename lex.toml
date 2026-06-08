@@ -5,8 +5,8 @@ lex         = "0.9.7"
 description = "Pure-Lex implementation of the Google Agent2Agent (A2A) protocol — AgentCard, JSON-RPC 2.0 envelope, Task lifecycle, SSE streaming."
 
 [dependencies]
-lex-schema = { path = "../../generic/lex-schema" }
-lex-web    = { path = "../../generic/lex-web" }
-lex-spec   = { path = "../lex-spec" }
-lex-trail  = { path = "../lex-trail" }
+lex-schema = { git = "https://github.com/alpibrusl/lex-schema" }
+lex-web    = { git = "https://github.com/alpibrusl/lex-web" }
+lex-spec   = { git = "https://github.com/alpibrusl/lex-spec" }
+lex-trail  = { git = "https://github.com/alpibrusl/lex-trail" }
 lex-orm    = { git = "https://github.com/alpibrusl/lex-orm" }
