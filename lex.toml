@@ -9,4 +9,4 @@ lex-schema = { path = "../../generic/lex-schema" }
 lex-web    = { path = "../../generic/lex-web" }
 lex-spec   = { path = "../lex-spec" }
 lex-trail  = { path = "../lex-trail" }
-lex-orm    = { path = "../../generic/lex-orm" }
+lex-orm    = { git = "https://github.com/alpibrusl/lex-orm" }
