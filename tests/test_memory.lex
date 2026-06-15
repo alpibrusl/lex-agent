@@ -33,7 +33,6 @@ fn open_fresh() -> [crypto, random, sql, fs_write] Result[conn.ConnDb, Str] {
 }
 
 # ── KV upsert ─────────────────────────────────────────────────────────────────
-
 fn store_and_recall_by_key() -> [crypto, random, sql, fs_read, fs_write, time] Result[Unit, Str] {
   match open_fresh() {
     Err(e) => Err(e),
@@ -106,7 +105,6 @@ fn recall_by_key_missing_returns_none() -> [crypto, random, sql, fs_read, fs_wri
 }
 
 # ── Append log ────────────────────────────────────────────────────────────────
-
 fn empty_key_appends() -> [crypto, random, sql, fs_read, fs_write, time] Result[Unit, Str] {
   match open_fresh() {
     Err(e) => Err(e),
@@ -124,7 +122,6 @@ fn empty_key_appends() -> [crypto, random, sql, fs_read, fs_write, time] Result[
 }
 
 # ── recall_all ────────────────────────────────────────────────────────────────
-
 fn recall_all_returns_all_kinds() -> [crypto, random, sql, fs_read, fs_write, time] Result[Unit, Str] {
   match open_fresh() {
     Err(e) => Err(e),
@@ -157,7 +154,6 @@ fn recall_all_empty_agent_returns_empty() -> [crypto, random, sql, fs_read, fs_w
 }
 
 # ── State blob ────────────────────────────────────────────────────────────────
-
 fn state_defaults_to_empty_json() -> [crypto, random, sql, fs_read, fs_write, time] Result[Unit, Str] {
   match open_fresh() {
     Err(e) => Err(e),
@@ -222,7 +218,6 @@ fn state_isolated_per_agent() -> [crypto, random, sql, fs_read, fs_write, time] 
 }
 
 # ── to_context ────────────────────────────────────────────────────────────────
-
 fn to_context_empty_returns_empty_str() -> Result[Unit, Str] {
   let ctx := mem.to_context([])
   if ctx == "" {
@@ -265,24 +260,8 @@ fn to_context_includes_entry_content() -> [crypto, random, sql, fs_read, fs_writ
 }
 
 # ── Suite ─────────────────────────────────────────────────────────────────────
-
 fn suite() -> [crypto, random, sql, fs_read, fs_write, time] List[Result[Unit, Str]] {
-  [
-    store_and_recall_by_key(),
-    upsert_replaces_existing(),
-    different_agents_isolated(),
-    recall_by_key_missing_returns_none(),
-    empty_key_appends(),
-    recall_all_returns_all_kinds(),
-    recall_all_empty_agent_returns_empty(),
-    state_defaults_to_empty_json(),
-    save_and_load_state_round_trips(),
-    save_state_overwrites(),
-    state_isolated_per_agent(),
-    to_context_empty_returns_empty_str(),
-    to_context_non_empty_has_header(),
-    to_context_includes_entry_content(),
-  ]
+  [store_and_recall_by_key(), upsert_replaces_existing(), different_agents_isolated(), recall_by_key_missing_returns_none(), empty_key_appends(), recall_all_returns_all_kinds(), recall_all_empty_agent_returns_empty(), state_defaults_to_empty_json(), save_and_load_state_round_trips(), save_state_overwrites(), state_isolated_per_agent(), to_context_empty_returns_empty_str(), to_context_non_empty_has_header(), to_context_includes_entry_content()]
 }
 
 fn run_all() -> [crypto, random, sql, fs_read, fs_write, time] Int {
@@ -293,3 +272,4 @@ fn run_all() -> [crypto, random, sql, fs_read, fs_write, time] Int {
     }
   })
 }
+

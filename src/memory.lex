@@ -32,14 +32,7 @@ import "lex-orm/src/connection" as conn
 import "lex-orm/src/query" as ormq
 
 # ── Types ─────────────────────────────────────────────────────────────────────
-type MemoryEntry = {
-  id       :: Str,
-  agent_id :: Str,
-  kind     :: Str,
-  key      :: Str,
-  content  :: Str,
-  ts       :: Str,
-}
+type MemoryEntry = { id :: Str, agent_id :: Str, kind :: Str, key :: Str, content :: Str, ts :: Str }
 
 # ── Schema ────────────────────────────────────────────────────────────────────
 fn init_schema(db :: conn.ConnDb) -> [sql, fs_write] Result[Unit, Str] {
@@ -85,7 +78,7 @@ fn db_query_mem(db :: conn.ConnDb, sql_str :: Str, params :: List[SqlParam]) -> 
 # Empty key → append: always inserts a fresh row (useful for lessons, obs).
 fn store(db :: conn.ConnDb, agent_id :: Str, kind :: Str, key :: Str, content :: Str) -> [sql, fs_write, time, crypto, random] Unit {
   let now := time.now_str()
-  let id  := crypto.random_str_hex(8)
+  let id := crypto.random_str_hex(8)
   if str.is_empty(key) {
     let __r := db_exec(db, "INSERT INTO agent_memory (id, agent_id, kind, key, content, ts) VALUES (?, ?, ?, '', ?, ?)", [PStr(id), PStr(agent_id), PStr(kind), PStr(content), PStr(now)])
     ()
@@ -156,3 +149,4 @@ fn to_context(entries :: List[MemoryEntry]) -> Str {
     str.concat("\n\nMemory:\n", str.join(lines, "\n"))
   }
 }
+
