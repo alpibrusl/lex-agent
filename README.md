@@ -1,5 +1,9 @@
 # lex-agent
 
+[![CI](https://github.com/alpibrusl/lex-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/alpibrusl/lex-agent/actions/workflows/ci.yml)
+
+**Part of the [Lex](https://lexlang.org) project** — Agents · [Manifesto](https://lexlang.org/manifesto) · [All packages](https://lexlang.org)
+
 **Pure-Lex implementation of the [Google Agent2Agent (A2A) protocol](https://github.com/google/A2A).**
 Write your agent in Lex, expose `Inbound` capabilities via standard A2A
 JSON-RPC over HTTPS, talk to ADK / LangGraph / CrewAI / AutoGen agents
