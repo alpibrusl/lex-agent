@@ -96,17 +96,12 @@ jobs:
           # Trim to the last ~60kB to stay under the 65535-char
           # comment limit while keeping the most relevant tail.
           tail -c 60000 ci_log.txt > ci_log.tail.txt
-          json=$(python3 -c '
-import json, sys
-with open("ci_log.tail.txt") as f:
-    body = "## CI log (tail)\n\n```\n" + f.read() + "\n```"
-print(json.dumps({"body": body}))
-')
+          jq -Rs '{body: ("## CI log (tail)\n\n```\n" + . + "\n```")}' ci_log.tail.txt > ci_body.json
           curl -sS -X POST \
             -H "Authorization: token $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" \
-            -d "$json" | jq -r '.html_url // .message // "?"'
+            --data @ci_body.json | jq -r '.html_url // .message // "?"'
 
   # ----------------------------------------------------------------
   # Interop — validate lex-agent's wire format against the Google
