@@ -33,7 +33,7 @@ import "std.str" as str
 
 import "std.map" as map
 
-import "std.iter" as iter
+import "std.stream" as stream
 
 import "lex-schema/json_value" as jv
 
@@ -197,17 +197,17 @@ fn parse_rpc_error(j :: jv.Json) -> proto.RpcError {
 # ---- subscribe --------------------------------------------------
 #
 # POST a sendSubscribe and decode the SSE stream into StatusUpdates.
-# Uses `http.stream_lines` (which today eagerly buffers — see
-# lex-lang docs); good enough for A2A servers that close the
-# connection after the terminal frame.
-fn subscribe(peer_url :: Str, m :: msg.Message, opts :: SendOpts, api_key :: Str) -> [net, crypto, random] Result[List[tk.StatusUpdate], Str] {
+# `http.stream_lines` yields a lazy `Stream[Str]` (lex-lang 0.10), read
+# line-by-line off the socket; good enough for A2A servers that close
+# the connection after the terminal frame.
+fn subscribe(peer_url :: Str, m :: msg.Message, opts :: SendOpts, api_key :: Str) -> [net, crypto, random, stream] Result[List[tk.StatusUpdate], Str] {
   let stamped := stamp_message(m)
   let params := build_send_params(stamped, opts)
   let body := build_envelope(proto.method_tasks_send_subscribe(), params, IdStr(opts.task_id))
   let headers := build_headers(api_key)
   match http.stream_lines(peer_url, headers, body) {
     Err(e) => Err(str.concat("stream error: ", e)),
-    Ok(it) => Ok(decode_iter(it)),
+    Ok(s) => Ok(decode_stream(s)),
   }
 }
 
@@ -219,17 +219,16 @@ fn build_headers(api_key :: Str) -> Map[Str, Str] {
   }
 }
 
-# Convert the line-iterator into a List[Str] then through the
-# stream decoder. The eager-buffer caveat is already documented at
-# the `http.stream_lines` layer.
-fn decode_iter(it :: Iter[Str]) -> List[tk.StatusUpdate] {
-  let lines := iter_to_list(it)
+# Collect the lazy line stream into a List[Str] then run it through the
+# stream decoder. Consuming the stream carries the `[stream]` effect.
+fn decode_stream(s :: Stream[Str]) -> [stream] List[tk.StatusUpdate] {
+  let lines := stream_to_list(s)
   ssem.decode_statuses(lines)
 }
 
-# Inline iter→list, ignoring effects since stream_lines yields pure.
-fn iter_to_list(it :: Iter[Str]) -> List[Str] {
-  iter.to_list(it)
+# Drain the lazy `Stream[Str]` into a List[Str] via `std.stream`.
+fn stream_to_list(s :: Stream[Str]) -> [stream] List[Str] {
+  stream.collect(s)
 }
 
 # ---- Trail-aware variants ----------------------------------------
@@ -243,7 +242,7 @@ fn send_task_traced(log :: trail.Log, parent :: Option[Str], peer_url :: Str, m 
   send_task(peer_url, m, opts)
 }
 
-fn subscribe_traced(log :: trail.Log, parent :: Option[Str], peer_url :: Str, m :: msg.Message, opts :: SendOpts, api_key :: Str) -> [net, crypto, random, sql, time] Result[List[tk.StatusUpdate], Str] {
+fn subscribe_traced(log :: trail.Log, parent :: Option[Str], peer_url :: Str, m :: msg.Message, opts :: SendOpts, api_key :: Str) -> [net, crypto, random, sql, time, stream] Result[List[tk.StatusUpdate], Str] {
   let payload := str.join(["{\"task_id\":\"", opts.task_id, "\",\"to_agent\":\"", peer_url, "\"}"], "")
   let __evt := trail.append(log, kinds.a2a_msg_sent(), parent, payload)
   subscribe(peer_url, m, opts, api_key)
