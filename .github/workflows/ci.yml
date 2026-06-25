@@ -203,7 +203,7 @@ jobs:
       - name: Run cross-framework example
         run: |
           output=$(lex run --allow-effects \
-            io,time,crypto,random,sql,fs_read,fs_write,net,concurrent \
+            io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,stream \
             examples/04_calls_public_agent.lex demo)
           echo "$output"
           # Assertion 1: discovery returned the peer's name
