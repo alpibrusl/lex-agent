@@ -27,7 +27,7 @@ jobs:
       - name: Install Lex toolchain
         run: |
           set -euxo pipefail
-          LEX_VERSION="0.9.14"
+          LEX_VERSION="0.10.0"
           {
             echo "=== Install Lex toolchain ==="
             curl -fsSL -o /tmp/lex.tgz \
@@ -74,7 +74,7 @@ jobs:
         run: |
           echo "=== lex test ===" | tee -a ci_log.txt
           lex test --allow-effects \
-            io,time,crypto,random,sql,fs_read,fs_write,net,concurrent \
+            io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,stream \
             tests/ 2>&1 | tee -a ci_log.txt
           rc="${PIPESTATUS[0]}"
           [ "$rc" -eq 0 ] || exit "$rc"
@@ -96,17 +96,12 @@ jobs:
           # Trim to the last ~60kB to stay under the 65535-char
           # comment limit while keeping the most relevant tail.
           tail -c 60000 ci_log.txt > ci_log.tail.txt
-          json=$(python3 -c '
-import json, sys
-with open("ci_log.tail.txt") as f:
-    body = "## CI log (tail)\n\n```\n" + f.read() + "\n```"
-print(json.dumps({"body": body}))
-')
+          jq -Rs '{body: ("## CI log (tail)\n\n```\n" + . + "\n```")}' ci_log.tail.txt > ci_body.json
           curl -sS -X POST \
             -H "Authorization: token $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" \
-            -d "$json" | jq -r '.html_url // .message // "?"'
+            --data @ci_body.json | jq -r '.html_url // .message // "?"'
 
   # ----------------------------------------------------------------
   # Interop — validate lex-agent's wire format against the Google
@@ -185,7 +180,7 @@ print(json.dumps({"body": body}))
       - name: Install Lex toolchain
         run: |
           set -euxo pipefail
-          LEX_VERSION="0.9.14"
+          LEX_VERSION="0.10.0"
           curl -fsSL -o /tmp/lex.tgz \
             "https://github.com/alpibrusl/lex-lang/releases/download/v${LEX_VERSION}/lex-v${LEX_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
           tar -xzf /tmp/lex.tgz -C /tmp/
@@ -208,7 +203,7 @@ print(json.dumps({"body": body}))
       - name: Run cross-framework example
         run: |
           output=$(lex run --allow-effects \
-            io,time,crypto,random,sql,fs_read,fs_write,net,concurrent \
+            io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,stream \
             examples/04_calls_public_agent.lex demo)
           echo "$output"
           # Assertion 1: discovery returned the peer's name

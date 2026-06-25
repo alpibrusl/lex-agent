@@ -36,7 +36,7 @@ fn test_send_task_traced_emits_task_sent() -> [sql, fs_write, time, net, crypto,
   }
 }
 
-fn test_subscribe_traced_emits_message_sent() -> [sql, fs_write, time, net, crypto, random] Result[Unit, Str] {
+fn test_subscribe_traced_emits_message_sent() -> [sql, fs_write, time, net, crypto, random, stream] Result[Unit, Str] {
   match trail.open_memory() {
     Err(e) => Err(str.concat("open_memory: ", e)),
     Ok(log) => {
@@ -55,11 +55,11 @@ fn test_subscribe_traced_emits_message_sent() -> [sql, fs_write, time, net, cryp
   }
 }
 
-fn suite() -> [sql, fs_write, time, net, crypto, random] List[Result[Unit, Str]] {
+fn suite() -> [sql, fs_write, time, net, crypto, random, stream] List[Result[Unit, Str]] {
   [test_send_task_traced_emits_task_sent(), test_subscribe_traced_emits_message_sent()]
 }
 
-fn run_all() -> [sql, fs_write, time, net, crypto, random] Int {
+fn run_all() -> [sql, fs_write, time, net, crypto, random, stream] Int {
   list.fold(suite(), 0, fn (acc :: Int, v :: Result[Unit, Str]) -> Int {
     match v {
       Ok(_) => acc,
