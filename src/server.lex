@@ -241,7 +241,8 @@ fn run_skill(skill :: Skill, store_ref :: Option[store.Store], trail_log :: Opti
         Err(_) => initial,
       }
       let __e1 := emit_trail(trail_log, kinds.a2a_task_state_change(), None, str.join(["{\"task_id\":\"", task_id, "\",\"from_state\":\"submitted\",\"to_state\":\"working\"}"], ""))
-      let outcome := skill.handle(m)
+      let m_ctx := { message_id: m.message_id, role: m.role, parts: m.parts, context_id: ctx_id }
+      let outcome := skill.handle(m_ctx)
       let stamped_reply := stamp_reply_id(outcome.reply)
       let with_reply := match tk.advance(advanced, outcome.next_state, stamped_reply) {
         Ok(t) => t,
@@ -505,7 +506,7 @@ fn emit_skill_frames(skill :: Skill, store_ref :: Option[store.Store], trail_log
       }
       let __e1 := emit_trail(trail_log, kinds.a2a_task_state_change(), None, str.join(["{\"task_id\":\"", task_id, "\",\"from_state\":\"submitted\",\"to_state\":\"working\"}"], ""))
       let working_frame := ssem.encode_status(tk.status_update(working, None))
-      let outcome := skill.handle(m)
+      let outcome := skill.handle({ message_id: m.message_id, role: m.role, parts: m.parts, context_id: ctx_id })
       let stamped_reply := stamp_reply_id(outcome.reply)
       let with_reply := match tk.advance(working, outcome.next_state, stamped_reply) {
         Ok(t) => t,
