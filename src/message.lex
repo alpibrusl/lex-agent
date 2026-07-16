@@ -66,7 +66,9 @@ fn role_of(s :: Str) -> Option[Role] {
   }
 }
 
-type Message = { message_id :: Str, role :: Role, parts :: List[Part] }
+# context_id carries the A2A conversation key (params.contextId) so a handler
+# can scope per-conversation state; "" when the transport didn't supply one.
+type Message = { message_id :: Str, role :: Role, parts :: List[Part], context_id :: Str }
 
 # Convenience builders --------------------------------------------------
 #
@@ -76,34 +78,34 @@ type Message = { message_id :: Str, role :: Role, parts :: List[Part] }
 # go through `*_with_id` (or call `gen_message_id` first and feed the
 # result in).
 fn user_text(s :: Str) -> Message {
-  { message_id: "", role: RoleUser, parts: [TextPart(s)] }
+  { message_id: "", role: RoleUser, parts: [TextPart(s)], context_id: "" }
 }
 
 fn agent_text(s :: Str) -> Message {
-  { message_id: "", role: RoleAgent, parts: [TextPart(s)] }
+  { message_id: "", role: RoleAgent, parts: [TextPart(s)], context_id: "" }
 }
 
 fn agent_data(data :: jv.Json) -> Message {
-  { message_id: "", role: RoleAgent, parts: [DataPart(data)] }
+  { message_id: "", role: RoleAgent, parts: [DataPart(data)], context_id: "" }
 }
 
 fn user_text_with_id(id :: Str, s :: Str) -> Message {
-  { message_id: id, role: RoleUser, parts: [TextPart(s)] }
+  { message_id: id, role: RoleUser, parts: [TextPart(s)], context_id: "" }
 }
 
 fn agent_text_with_id(id :: Str, s :: Str) -> Message {
-  { message_id: id, role: RoleAgent, parts: [TextPart(s)] }
+  { message_id: id, role: RoleAgent, parts: [TextPart(s)], context_id: "" }
 }
 
 fn agent_data_with_id(id :: Str, data :: jv.Json) -> Message {
-  { message_id: id, role: RoleAgent, parts: [DataPart(data)] }
+  { message_id: id, role: RoleAgent, parts: [DataPart(data)], context_id: "" }
 }
 
 # Stamp / overwrite an existing Message's id — useful when a caller
 # constructed the Message via the pure builders and only now has a
 # random source available.
 fn with_message_id(m :: Message, id :: Str) -> Message {
-  { message_id: id, role: m.role, parts: m.parts }
+  { message_id: id, role: m.role, parts: m.parts, context_id: m.context_id }
 }
 
 # Fresh A2A-style id. 32 hex characters of crypto-random — collision
@@ -172,7 +174,7 @@ fn parse_message(j :: jv.Json) -> Result[Message, Str] {
             None => Err("parts must be an array"),
             Some(items) => match parse_parts(items) {
               Err(e) => Err(e),
-              Ok(ps) => Ok({ message_id: message_id, role: r, parts: ps }),
+              Ok(ps) => Ok({ message_id: message_id, role: r, parts: ps, context_id: "" }),
             },
           },
         },
