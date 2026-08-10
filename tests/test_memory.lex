@@ -388,6 +388,83 @@ fn recall_scoped_limit_is_respected() -> [crypto, random, sql, fs_read, fs_write
   }
 }
 
+# ── recall_ranked ─────────────────────────────────────────────────────────────
+# Unlike recall_scoped, ranks across EVERY scope for the agent — the shape a
+# host wants that doesn't partition its memory by scope (e.g. lex-soft's
+# recall_facts_text/recall_memory_json, which never filtered by scope at all).
+fn recall_ranked_spans_every_scope() -> [crypto, random, sql, fs_read, fs_write, time] Result[Unit, Str] {
+  match open_fresh() {
+    Err(e) => Err(e),
+    Ok(db) => {
+      let __1 := mem.store_kv(db, "agent1", "constraint", "k1", "tenant-a value", "semantic", "medium", "tenant-a", "")
+      let __2 := mem.store_kv(db, "agent1", "constraint", "k2", "tenant-b value", "semantic", "medium", "tenant-b", "")
+      let ranked := mem.recall_ranked(db, "agent1", 10)
+      if list.len(ranked) == 2 {
+        Ok(())
+      } else {
+        Err(str.concat("expected entries from both scopes, got ", int.to_str(list.len(ranked))))
+      }
+    },
+  }
+}
+
+fn recall_ranked_orders_by_importance_then_recency() -> [crypto, random, sql, fs_read, fs_write, time] Result[Unit, Str] {
+  match open_fresh() {
+    Err(e) => Err(e),
+    Ok(db) => {
+      let __1 := mem.store_kv(db, "agent1", "obs", "", "low prio", "episodic", "low", "scope-a", "")
+      let __2 := mem.store_kv(db, "agent1", "obs", "", "high prio", "episodic", "high", "scope-b", "")
+      let __3 := mem.store_kv(db, "agent1", "obs", "", "medium prio", "episodic", "medium", "global", "")
+      let ranked := mem.recall_ranked(db, "agent1", 10)
+      let contents := list.map(ranked, fn (e :: mem.MemoryEntry) -> Str {
+        e.content
+      })
+      if str.join(contents, ",") == "high prio,medium prio,low prio" {
+        Ok(())
+      } else {
+        Err(str.concat("expected high,medium,low order across scopes, got: ", str.join(contents, ",")))
+      }
+    },
+  }
+}
+
+fn recall_ranked_excludes_superseded_and_expired() -> [crypto, random, sql, fs_read, fs_write, time] Result[Unit, Str] {
+  match open_fresh() {
+    Err(e) => Err(e),
+    Ok(db) => {
+      let __1 := mem.store_kv(db, "agent1", "constraint", "budget", "100", "semantic", "medium", "scope-a", "")
+      let __2 := mem.store_kv(db, "agent1", "constraint", "budget", "200", "semantic", "medium", "scope-a", "")
+      let __3 := mem.store_kv(db, "agent1", "obs", "", "expired", "episodic", "medium", "scope-b", "2000-01-01T00:00:00Z")
+      let ranked := mem.recall_ranked(db, "agent1", 10)
+      let contents := list.map(ranked, fn (e :: mem.MemoryEntry) -> Str {
+        e.content
+      })
+      if str.join(contents, ",") == "200" {
+        Ok(())
+      } else {
+        Err(str.concat("expected only the live, unexpired entry, got: ", str.join(contents, ",")))
+      }
+    },
+  }
+}
+
+fn recall_ranked_limit_is_respected() -> [crypto, random, sql, fs_read, fs_write, time] Result[Unit, Str] {
+  match open_fresh() {
+    Err(e) => Err(e),
+    Ok(db) => {
+      let __1 := mem.store_kv(db, "agent1", "obs", "", "one", "episodic", "medium", "scope-a", "")
+      let __2 := mem.store_kv(db, "agent1", "obs", "", "two", "episodic", "medium", "scope-b", "")
+      let __3 := mem.store_kv(db, "agent1", "obs", "", "three", "episodic", "medium", "global", "")
+      let ranked := mem.recall_ranked(db, "agent1", 2)
+      if list.len(ranked) == 2 {
+        Ok(())
+      } else {
+        Err(str.concat("expected the limit to cap at 2, got ", int.to_str(list.len(ranked))))
+      }
+    },
+  }
+}
+
 # recall_all/recall_kind/recall_by_key are unmoved by lex-agent#26 for any
 # caller that only ever used `store` — every row `store` writes has
 # `superseded=0` by column default, so the new filter these functions gained
@@ -477,7 +554,7 @@ fn to_context_labeled_empty_returns_empty_str() -> Result[Unit, Str] {
 
 # ── Suite ─────────────────────────────────────────────────────────────────────
 fn suite() -> [crypto, random, sql, fs_read, fs_write, time] List[Result[Unit, Str]] {
-  [store_and_recall_by_key(), upsert_replaces_existing(), different_agents_isolated(), recall_by_key_missing_returns_none(), empty_key_appends(), recall_all_returns_all_kinds(), recall_all_empty_agent_returns_empty(), state_defaults_to_empty_json(), save_and_load_state_round_trips(), save_state_overwrites(), state_isolated_per_agent(), store_kv_upsert_supersedes_not_deletes(), store_kv_unchanged_value_is_noop(), store_kv_empty_key_dedupes_identical_appends(), recall_scoped_filters_by_scope(), recall_scoped_excludes_superseded(), recall_scoped_excludes_expired(), recall_scoped_orders_by_importance_then_recency(), recall_scoped_limit_is_respected(), plain_store_still_fully_visible_through_recall_all(), to_context_empty_returns_empty_str(), to_context_non_empty_has_header(), to_context_includes_entry_content(), to_context_labeled_uses_custom_header(), to_context_labeled_empty_returns_empty_str()]
+  [store_and_recall_by_key(), upsert_replaces_existing(), different_agents_isolated(), recall_by_key_missing_returns_none(), empty_key_appends(), recall_all_returns_all_kinds(), recall_all_empty_agent_returns_empty(), state_defaults_to_empty_json(), save_and_load_state_round_trips(), save_state_overwrites(), state_isolated_per_agent(), store_kv_upsert_supersedes_not_deletes(), store_kv_unchanged_value_is_noop(), store_kv_empty_key_dedupes_identical_appends(), recall_scoped_filters_by_scope(), recall_scoped_excludes_superseded(), recall_scoped_excludes_expired(), recall_scoped_orders_by_importance_then_recency(), recall_scoped_limit_is_respected(), recall_ranked_spans_every_scope(), recall_ranked_orders_by_importance_then_recency(), recall_ranked_excludes_superseded_and_expired(), recall_ranked_limit_is_respected(), plain_store_still_fully_visible_through_recall_all(), to_context_empty_returns_empty_str(), to_context_non_empty_has_header(), to_context_includes_entry_content(), to_context_labeled_uses_custom_header(), to_context_labeled_empty_returns_empty_str()]
 }
 
 fn run_all() -> [crypto, random, sql, fs_read, fs_write, time] Int {
