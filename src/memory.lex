@@ -247,6 +247,23 @@ fn recall_scoped(db :: conn.ConnDb, agent_id :: Str, scope :: Str, lim :: Int) -
   }
 }
 
+# Same live-view ordering as `recall_scoped` (importance, then recency;
+# `superseded=0`; unexpired), but across EVERY scope for the agent rather
+# than one — the shape a host wants when it doesn't partition memory by
+# scope at all (a single global view is just every entry sharing the
+# default 'global' scope, which this already covers; a host that DOES use
+# multiple scopes gets all of them ranked together here, or one scope at a
+# time via `recall_scoped`).
+fn recall_ranked(db :: conn.ConnDb, agent_id :: Str, lim :: Int) -> [sql, fs_read, time] List[MemoryEntry] {
+  let now := time.now_str()
+  let sq := ormq.for_dialect({ sql: str.join(["SELECT ", mem_cols(), " FROM agent_memory WHERE agent_id=? AND superseded=0 AND (expires_at='' OR expires_at>?) ORDER BY CASE importance WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, ts DESC LIMIT ?"], ""), params: [PStr(agent_id), PStr(now), PInt(lim)] }, db.dialect)
+  let rows :: Result[List[MemRow], SqlError] := sql.query(db.handle, sq.sql, sq.params)
+  match rows {
+    Err(_) => [],
+    Ok(rs) => list.map(rs, row_to_entry),
+  }
+}
+
 # ── State blob ────────────────────────────────────────────────────────────────
 fn load_state(db :: conn.ConnDb, agent_id :: Str) -> [sql, fs_read] Str {
   let sq := ormq.for_dialect({ sql: "SELECT state_json FROM agent_state WHERE agent_id=?", params: [PStr(agent_id)] }, db.dialect)
