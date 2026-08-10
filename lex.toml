@@ -9,4 +9,3 @@ lex-schema = { git = "https://github.com/alpibrusl/lex-schema" }
 lex-web    = { git = "https://github.com/alpibrusl/lex-web" }
 lex-spec   = { git = "https://github.com/alpibrusl/lex-spec" }
 lex-trail  = { git = "https://github.com/alpibrusl/lex-trail" }
-lex-orm    = { git = "https://github.com/alpibrusl/lex-orm" }
