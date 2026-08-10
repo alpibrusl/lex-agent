@@ -3,6 +3,7 @@ name        = "lex-agent"
 version     = "0.1.0"
 lex         = "0.10.0"
 description = "Pure-Lex implementation of the Google Agent2Agent (A2A) protocol — AgentCard, JSON-RPC 2.0 envelope, Task lifecycle, SSE streaming."
+license     = "EUPL-1.2"
 
 [dependencies]
 lex-schema = { git = "https://github.com/alpibrusl/lex-schema" }
