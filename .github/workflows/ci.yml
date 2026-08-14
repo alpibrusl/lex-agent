@@ -74,7 +74,7 @@ jobs:
         run: |
           echo "=== lex test ===" | tee -a ci_log.txt
           lex test --allow-effects \
-            io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,stream \
+            io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,stream,approval \
             tests/ 2>&1 | tee -a ci_log.txt
           rc="${PIPESTATUS[0]}"
           [ "$rc" -eq 0 ] || exit "$rc"

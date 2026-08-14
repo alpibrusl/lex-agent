@@ -50,8 +50,8 @@ fn card_route(agent :: srv.AgentDef) -> (ctx.Ctx) -> resp.Response {
 #
 # The HTTP status is always 200 — JSON-RPC errors ride inside the
 # response envelope, not the HTTP layer.
-fn rpc_route(agent :: srv.AgentDef) -> (ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
-  fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+fn rpc_route(agent :: srv.AgentDef) -> (ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
+  fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     let body_str := wbody.raw_body(c)
     if srv.is_subscribe_body(body_str) {
       let sse_body := srv.dispatch_subscribe_str(agent, body_str)
