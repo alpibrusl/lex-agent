@@ -59,12 +59,25 @@ fn suite() -> [sql, fs_write, time, net, crypto, random, stream] List[Result[Uni
   [test_send_task_traced_emits_task_sent(), test_subscribe_traced_emits_message_sent()]
 }
 
-fn run_all() -> [sql, fs_write, time, net, crypto, random, stream] Int {
+fn run_all_count() -> [sql, fs_write, time, net, crypto, random, stream] Int {
   list.fold(suite(), 0, fn (acc :: Int, v :: Result[Unit, Str]) -> Int {
     match v {
       Ok(_) => acc,
       Err(_) => acc + 1,
     }
   })
+}
+
+# `lex test` calls `run_all` and DISCARDS what it returns (lex-lang#757), so a
+# returned failure count reports `ok` however many assertions failed. Only a
+# raise fails a file — the same idiom lex-ems, lex-web and lex-guard use.
+# Run `run_all_count` directly to see which assertions failed.
+fn run_all() -> [sql, fs_write, time, net, crypto, random, stream] Unit {
+  if run_all_count() == 0 {
+    ()
+  } else {
+    let __boom := 1 / 0
+    ()
+  }
 }
 
