@@ -104,8 +104,29 @@ fn test_dispatch_no_trail_is_fine() -> [sql, fs_write, time, io, crypto, random,
   Ok(())
 }
 
+# A negative control for has_kind, and the reason it is here: the three tests
+# above ask only whether a kind is PRESENT. If has_kind ever stopped
+# discriminating — comparing with != rather than ==, say — it would return true
+# whenever the trail held any other kind, and all three would still pass while
+# checking nothing. Pinning that an absent kind reads as absent is what makes
+# the other three mean what they say.
+fn test_has_kind_discriminates() -> [sql, fs_write, time, io, crypto, random, fs_read, net, concurrent, llm, proc, approval] Result[Unit, Str] {
+  match trail.open_memory() {
+    Err(e) => Err(str.concat("open_memory: ", e)),
+    Ok(log) => {
+      let agent := test_agent(log)
+      let _resp := srv.dispatch_request(agent, good_envelope())
+      if has_kind(log, "a2a.task.received") and not has_kind(log, "a2a.task.never.emitted") {
+        Ok(())
+      } else {
+        Err("has_kind must tell an emitted kind from one that was never written")
+      }
+    },
+  }
+}
+
 fn suite() -> [sql, fs_write, time, io, crypto, random, fs_read, net, concurrent, llm, proc, approval] List[Result[Unit, Str]] {
-  [test_dispatch_emits_task_received(), test_dispatch_emits_state_change(), test_dispatch_emits_message_sent(), test_dispatch_no_trail_is_fine()]
+  [test_dispatch_emits_task_received(), test_dispatch_emits_state_change(), test_dispatch_emits_message_sent(), test_dispatch_no_trail_is_fine(), test_has_kind_discriminates()]
 }
 
 fn run_all_count() -> [sql, fs_write, time, io, crypto, random, fs_read, net, concurrent, llm, proc, approval] Int {
