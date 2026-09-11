@@ -1,6 +1,6 @@
 [package]
 name        = "lex-agent"
-version     = "0.1.0"
+version     = "0.1.1"
 lex         = "0.10.18"
 description = "Pure-Lex implementation of the Google Agent2Agent (A2A) protocol — AgentCard, JSON-RPC 2.0 envelope, Task lifecycle, SSE streaming."
 license     = "EUPL-1.2"
